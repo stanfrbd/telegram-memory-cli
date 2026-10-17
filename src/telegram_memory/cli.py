@@ -108,7 +108,7 @@ def build_parser() -> argparse.ArgumentParser:
     serve = commands.add_parser("serve", help="Start the web interface and REST API.")
     serve.add_argument("--host", default="127.0.0.1")
     serve.add_argument("--port", type=int, default=8765)
-    serve.add_argument("--token", help="API token (prefer TGMEM_API_TOKEN environment variable).")
+    serve.add_argument("--token", help="API token (overrides TGMEM_API_TOKEN and server.api_token in config).")
     for target in (find_parser,):
         target.add_argument("--media", choices=["image", "video", "audio", "document", "text"])
         target.add_argument("--mime-type", help="Exact MIME or wildcard, e.g. image/*.")

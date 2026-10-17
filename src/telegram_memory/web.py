@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import hmac
-import os
 import tempfile
 import uuid
 from contextlib import asynccontextmanager
@@ -19,7 +18,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from telethon.errors import RPCError
 
 from .archive import Archive
-from .config import Config, read_channels, write_channels
+from .config import Config, read_channels, resolve_api_token, write_channels
 from .downloads import BrowserDownloads
 from .jobs import Jobs
 from .research import register_research
@@ -46,6 +45,7 @@ def create_app(
     client_factory=make_client,
     allowed_hosts: list[str] | None = None,
 ) -> FastAPI:
+    token = resolve_api_token(config, token)
     remote_lock = asyncio.Lock()
     tasks: dict[str, asyncio.Task] = {}
     client = None
@@ -404,9 +404,11 @@ def create_app(
 def serve(config: Config, host="127.0.0.1", port=8765, token=None):
     import uvicorn
 
-    token = token or os.environ.get("TGMEM_API_TOKEN")
+    token = resolve_api_token(config, token)
     if host not in {"127.0.0.1", "localhost", "::1"} and not token:
-        raise ValueError("Set TGMEM_API_TOKEN before exposing the server to the network.")
+        raise ValueError(
+            "Set server.api_token in config.toml, TGMEM_API_TOKEN, or --token before exposing the server to the network."
+        )
     hosts = ["localhost", "127.0.0.1", "[::1]"]
     if host in {"0.0.0.0", "::"}:
         hosts = ["*"]

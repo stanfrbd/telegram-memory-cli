@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 
@@ -29,6 +29,7 @@ class Config:
     database_path: Path
     download_dir: Path
     channels_path: Path
+    server_api_token: str | None = field(default=None, repr=False)
 
     @classmethod
     def load(cls, path: Path | None = None) -> "Config":
@@ -42,6 +43,12 @@ class Config:
         telegram = raw.get("telegram", {})
         storage = raw.get("storage", {})
         channels = raw.get("channels", {})
+        server = raw.get("server", {})
+        if not isinstance(server, dict):
+            raise ValueError("The server configuration must be a TOML table.")
+        server_token = server.get("api_token", "")
+        if not isinstance(server_token, str):
+            raise ValueError("server.api_token must be a string.")
         try:
             api_id = int(telegram["api_id"])
             api_hash = str(telegram["api_hash"]).strip()
@@ -66,6 +73,7 @@ class Config:
             database_path=configured_path(storage, "database", data_dir / "archive.sqlite3"),
             download_dir=configured_path(storage, "download_dir", data_dir / "downloads"),
             channels_path=configured_path(channels, "file", config_path.parent / "channels.txt"),
+            server_api_token=server_token.strip() or None,
         )
 
 
@@ -90,6 +98,11 @@ download_dir = "~/Downloads/Telegram"
 
 [channels]
 file = "channels.txt"
+
+[server]
+# Optional persistent token for the web interface and API.
+# Required for non-localhost binds unless supplied by environment or --token.
+api_token = ""
 """,
             encoding="utf-8",
         )
@@ -129,3 +142,11 @@ def write_channels(path: Path, channels: list[str]) -> None:
     )
     if os.name != "nt":
         path.chmod(0o600)
+
+
+def resolve_api_token(config: Config, token: str | None = None) -> str | None:
+    """Resolve explicit CLI value, environment, then persistent server configuration."""
+    for value in (token, os.environ.get("TGMEM_API_TOKEN"), config.server_api_token):
+        if value and value.strip():
+            return value.strip()
+    return None

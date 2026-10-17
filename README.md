@@ -247,8 +247,20 @@ curl -X POST http://127.0.0.1:8765/api/uploads \
   -F channel=me -F file=@report.pdf -F caption='My report' -F document=true
 ```
 
-The server binds to localhost by default. Set `TGMEM_API_TOKEN` for authentication; a token is
-mandatory for non-loopback binds. When authentication is enabled, the web page first shows
+The server binds to localhost by default. Configure a persistent token in your existing
+`~/.config/tgmem/config.toml` (or the file supplied via `--config`):
+
+```toml
+[server]
+api_token = "replace-with-a-long-random-token"
+```
+
+Then run `tgmem serve --host 0.0.0.0 --port 9080`; no environment variable is needed.
+The `[server]` section is optional, so existing configurations remain compatible. Newly
+initialized configuration templates include it. A blank token is treated as unset.
+Precedence is **`--token` → `TGMEM_API_TOKEN` → `[server].api_token`**; the first non-empty value
+wins. The environment variable remains supported for containers and temporary overrides.
+Restart the server after changing the configured token. A token is mandatory for non-loopback binds. When authentication is enabled, the web page first shows
 an API-token connection screen; the workspace stays hidden until the server validates the token.
 The token is saved in browser `localStorage` and checked automatically after reloads or reopening
 the page. A valid saved token opens the workspace immediately; a rejected one is forgotten and

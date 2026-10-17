@@ -376,3 +376,35 @@ def test_expired_browser_downloads_are_removed(tmp_path, monkeypatch):
     monkeypatch.setattr("telegram_memory.downloads.time.monotonic", lambda: 10**15)
     assert downloads.get("job") is None
     assert not path.exists()
+
+
+def test_persistent_config_token_protects_web_api(config, monkeypatch):
+    from dataclasses import replace
+
+    monkeypatch.delenv("TGMEM_API_TOKEN", raising=False)
+    config = replace(config, server_api_token="persistent-test-token")
+    with TestClient(create_app(config)) as client:
+        assert client.get("/api/auth").json() == {"token_required": True}
+        assert client.get("/api/status").status_code == 401
+        assert (
+            client.get(
+                "/api/status", headers={"Authorization": "Bearer persistent-test-token"}
+            ).status_code
+            == 200
+        )
+
+
+def test_serve_accepts_config_token_on_network_bind(config, monkeypatch):
+    from dataclasses import replace
+
+    import uvicorn
+
+    from telegram_memory.web import serve
+
+    monkeypatch.delenv("TGMEM_API_TOKEN", raising=False)
+    calls = []
+    monkeypatch.setattr(uvicorn, "run", lambda app, **kwargs: calls.append(kwargs))
+    serve(replace(config, server_api_token="persistent-test-token"), host="0.0.0.0", port=9080)
+    assert calls[0]["host"] == "0.0.0.0" and calls[0]["port"] == 9080
+    with pytest.raises(ValueError, match="server.api_token"):
+        serve(config, host="0.0.0.0")
