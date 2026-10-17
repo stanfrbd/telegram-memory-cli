@@ -1,7 +1,8 @@
 "use strict";
 const $ = (id) => document.getElementById(id);
 import { createSearchController } from "/search.js";
-let token = "",
+import { createAuthController } from "/auth.js";
+let auth,
   activeJobs = false;
 function el(tag, text, className) {
   const node = document.createElement(tag);
@@ -16,11 +17,12 @@ function notice(message, error = false) {
 }
 async function api(path, options = {}) {
   const headers = new Headers(options.headers);
-  if (token) headers.set("Authorization", `Bearer ${token}`);
+  if (auth?.token) headers.set("Authorization", `Bearer ${auth.token}`);
   if (options.body && !(options.body instanceof FormData))
     headers.set("Content-Type", "application/json");
   const response = await fetch(path, { ...options, headers });
   if (!response.ok) {
+    if (response.status === 401 && auth?.authorized) auth.lock();
     let message;
     try {
       const data = await response.json();
@@ -56,13 +58,6 @@ function view(name) {
 }
 for (const button of document.querySelectorAll("nav button"))
   button.onclick = () => view(button.dataset.view);
-$("auth").onclick = guard(async () => {
-  const value = prompt("API token (kept only in this page’s memory):");
-  if (value === null) return;
-  token = value;
-  await refresh();
-  notice("Connection updated.");
-});
 async function stats() {
   const data = await json("/api/status");
   $("stats").replaceChildren(
@@ -389,8 +384,11 @@ async function refresh() {
   await jobs();
   await rules();
 }
-guard(refresh)();
-setInterval(() => guard(jobs)(), 3000);
+auth = createAuthController({ loadWorkspace: refresh, notice });
+guard(() => auth.start())();
+setInterval(() => {
+  if (auth.authorized) guard(jobs)();
+}, 3000);
 
 function renderDiscovery(channels) {
   $("discovery-results").replaceChildren(

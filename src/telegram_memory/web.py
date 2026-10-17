@@ -124,7 +124,7 @@ def create_app(
         if origin and urlsplit(origin).netloc != request.headers.get("host"):
             return JSONResponse({"detail": "Cross-origin requests are disabled."}, status_code=403)
         protected = request.url.path.startswith(("/api/", "/docs", "/openapi.json", "/redoc"))
-        if token and protected:
+        if token and protected and request.url.path != "/api/auth":
             supplied = request.headers.get("authorization", "").removeprefix("Bearer ")
             if not hmac.compare_digest(supplied.encode(), token.encode()):
                 return JSONResponse(
@@ -153,6 +153,15 @@ def create_app(
     @app.get("/app.js", include_in_schema=False)
     async def javascript():
         return FileResponse(static / "app.js", media_type="text/javascript")
+
+    @app.get("/auth.js", include_in_schema=False)
+    async def auth_script():
+        return FileResponse(static / "auth.js", media_type="text/javascript")
+
+    @app.get("/api/auth")
+    async def auth_settings():
+        # Public capability flag only: no credential, account data or archive statistics.
+        return {"token_required": bool(token)}
 
     @app.get("/search.js", include_in_schema=False)
     async def search_script():

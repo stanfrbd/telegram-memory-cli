@@ -248,8 +248,17 @@ curl -X POST http://127.0.0.1:8765/api/uploads \
 ```
 
 The server binds to localhost by default. Set `TGMEM_API_TOKEN` for authentication; a token is
-mandatory for non-loopback binds. Use the **Set API token** button in the UI (token is kept only
-in page memory), and send `Authorization: Bearer TOKEN` from API clients. API and documentation
+mandatory for non-loopback binds. When authentication is enabled, the web page first shows
+an API-token connection screen; the workspace stays hidden until the server validates the token.
+The token is saved in browser `localStorage` and checked automatically after reloads or reopening
+the page. A valid saved token opens the workspace immediately; a rejected one is forgotten and
+the connection screen asks for the current token. **Set API token** reopens that screen to change
+credentials; **Forget saved token** clears storage and returns to the connection screen.
+The public `/api/auth` endpoint exposes only whether a token is required, never credentials or
+account data. Servers without token authentication open the workspace directly. Storage is
+specific to the browser profile and origin (scheme, host, and port), so another machine/browser
+or address needs its own initial token entry. If storage is blocked, the token works for the
+current page only. API clients send `Authorization: Bearer TOKEN`. API and documentation
 routes are protected; the UI shell itself contains no account data. For authenticated interactive
 API browsing, load `/openapi.json` with an API client; Swagger's initial schema fetch also needs
 the Bearer header. Cross-origin requests are rejected and no CORS access is enabled.

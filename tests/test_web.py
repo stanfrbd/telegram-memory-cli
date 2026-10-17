@@ -63,6 +63,7 @@ def test_search_filters_and_pagination(config):
 def test_auth_origin_and_channel_validation(config):
     with TestClient(create_app(config, token="secret")) as client:
         assert client.get("/").status_code == 200
+        assert client.get("/api/auth").json() == {"token_required": True}
         assert client.get("/api/status").status_code == 401
         client.headers["Authorization"] = "Bearer secret"
         assert client.get("/api/status").status_code == 200

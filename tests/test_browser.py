@@ -259,10 +259,16 @@ def test_mobile_auth_and_layout(browser, tmp_path):
         page.emulate_media(color_scheme="dark")
         page.goto(base)
         playwright.expect(page.locator("html")).to_have_attribute("data-theme", "dark")
-        expect_notice(page, "Bearer token")
-        page.once("dialog", lambda dialog: dialog.accept("browser-test-token"))
-        page.get_by_role("button", name="Set API token", exact=True).click()
-        expect_notice(page, "Connection updated")
+        playwright.expect(page.locator("#auth-gate")).to_be_visible()
+        playwright.expect(page.locator("#workspace")).to_be_hidden()
+        page.locator("#auth-token").fill("wrong-token")
+        page.locator("#auth-submit").click()
+        playwright.expect(page.locator("#auth-message")).to_contain_text("Invalid API token")
+        playwright.expect(page.locator("#workspace")).to_be_hidden()
+        assert page.evaluate("localStorage.getItem('tgmem-api-token')") is None
+        page.locator("#auth-token").fill("browser-test-token")
+        page.locator("#auth-submit").click()
+        playwright.expect(page.locator("#auth-gate")).to_be_hidden()
         playwright.expect(page.locator("#results .card")).to_have_count(50)
         assert page.evaluate("document.documentElement.scrollWidth <= innerWidth"), (
             "Mobile horizontal overflow"
@@ -280,6 +286,27 @@ def test_mobile_auth_and_layout(browser, tmp_path):
         playwright.expect(page.locator("html")).to_have_attribute("data-theme", "light")
         page.reload()
         playwright.expect(page.locator("html")).to_have_attribute("data-theme", "light")
+        playwright.expect(page.locator("#results .card")).to_have_count(50)
+        assert page.evaluate("localStorage.getItem('tgmem-api-token')") == "browser-test-token"
+        page.get_by_role("button", name="Set API token", exact=True).click()
+        playwright.expect(page.locator("#auth-gate")).to_be_visible()
+        page.get_by_role("button", name="Back to workspace", exact=True).click()
+        assert page.evaluate("localStorage.getItem('tgmem-api-token')") == "browser-test-token"
+        page.evaluate("localStorage.setItem('tgmem-api-token', 'revoked-token')")
+        page.reload()
+        playwright.expect(page.locator("#auth-message")).to_contain_text("no longer valid")
+        playwright.expect(page.locator("#workspace")).to_be_hidden()
+        assert page.evaluate("localStorage.getItem('tgmem-api-token')") is None
+        page.locator("#auth-token").fill("browser-test-token")
+        page.locator("#auth-submit").click()
+        playwright.expect(page.locator("#workspace")).to_be_visible()
+        page.get_by_role("button", name="Set API token", exact=True).click()
+        page.get_by_role("button", name="Forget saved token", exact=True).click()
+        playwright.expect(page.locator("#auth-message")).to_contain_text("Saved API token cleared")
+        assert page.evaluate("localStorage.getItem('tgmem-api-token')") is None
+        page.reload()
+        playwright.expect(page.locator("#auth-form")).to_be_visible()
+        playwright.expect(page.locator("#workspace")).to_be_hidden()
         assert not errors, errors
         page.close()
 

@@ -634,3 +634,54 @@ footer {
     width: 100%;
   }
 }
+
+#workspace {
+  display: flex;
+  width: 100%;
+}
+.auth-gate {
+  min-height: 100vh;
+  width: 100%;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+}
+.auth-panel {
+  width: 100%;
+  max-width: 460px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 32px;
+}
+.auth-panel h1 {
+  font-size: 28px;
+  line-height: 1.2;
+}
+.auth-message {
+  color: var(--muted);
+  line-height: 1.6;
+}
+.auth-message.error {
+  color: var(--error-text);
+}
+#auth-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 24px;
+}
+#auth-form label {
+  font-size: 12px;
+}
+#auth-form .hint {
+  margin: 0;
+}
+@media (max-width: 650px) {
+  #workspace {
+    display: block;
+  }
+  .auth-panel {
+    padding: 24px;
+  }
+}
