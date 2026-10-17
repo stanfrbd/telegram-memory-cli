@@ -283,10 +283,219 @@ curl -H "Authorization: Bearer $TGMEM_API_TOKEN" http://127.0.0.1:8765/api/statu
 
 Network deployments need HTTPS through a reverse proxy and appropriate network restrictions.
 The token grants access to the connected Telegram account's supported operations. The web UI
-never asks for login codes or passwords: authenticate in the CLI. Downloads are served only
-from the configured download directory and always as attachments. Web uploads are streamed
+never asks for login codes or passwords: authenticate in the CLI. Persistent downloads are served only
+from the configured download directory; browser-only downloads use isolated temporary files.
+Both are served as attachments. Web uploads are streamed
 to a temporary file, capped at 2 GiB, and removed after the task. Uploading sends a Telegram
 message; searches, indexing, favorites, and source-list edits do not modify Telegram content.
+
+## Run automatically as a service (Linux)
+
+For a Linux VM, use **systemd** unless you already manage your applications with **Supervisor**.
+Both examples below run the same `tgmem serve` process in the foreground, start it at boot
+through the process manager, and restart it after an unexpected failure. Choose **one** manager
+for this instance: do not run both against the same port, SQLite database, or Telegram session.
+These are Debian/Ubuntu examples; adjust package names and paths for other distributions.
+
+### Prepare the service account, installation, and configuration
+
+The examples use a dedicated `tgmem` account, an installation in `/opt/telegram-memory-cli`,
+and persistent configuration/session/archive/downloads in `/var/lib/tgmem`. Python 3.11 or
+newer is required. Run these commands once on the server (skip the user/clone commands if
+those already exist):
+
+```bash
+sudo apt-get update
+sudo apt-get install git python3-venv
+sudo useradd --system --user-group --create-home --home-dir /var/lib/tgmem --shell /usr/sbin/nologin tgmem
+sudo install -d -o tgmem -g tgmem -m 0755 /opt/telegram-memory-cli
+sudo -H -u tgmem git clone https://github.com/stanfrbd/telegram-memory-cli.git /opt/telegram-memory-cli
+sudo -H -u tgmem python3 -m venv /opt/telegram-memory-cli/.venv
+sudo -H -u tgmem /opt/telegram-memory-cli/.venv/bin/python -m pip install '/opt/telegram-memory-cli[web]'
+sudo chmod 700 /var/lib/tgmem
+sudo -H -u tgmem /opt/telegram-memory-cli/.venv/bin/tgmem --config /var/lib/tgmem/config.toml init
+sudoedit /var/lib/tgmem/config.toml
+```
+
+Edit the configuration with your real Telegram credentials and a server token. Use **absolute
+paths** so the service uses the same files regardless of its environment or working directory:
+
+```toml
+[telegram]
+api_id = 12345
+api_hash = "YOUR_API_HASH"
+phone = ""
+session_path = "/var/lib/tgmem/session"
+
+[storage]
+database = "/var/lib/tgmem/archive.sqlite3"
+download_dir = "/var/lib/tgmem/downloads"
+
+[channels]
+file = "/var/lib/tgmem/channels.txt"
+
+[server]
+api_token = "REPLACE_WITH_A_LONG_RANDOM_TOKEN"
+```
+
+For example, generate a token with `python3 -c 'import secrets; print(secrets.token_urlsafe(32))'`
+and paste it into `server.api_token`. The configuration file must remain readable by `tgmem`.
+Authenticate **interactively as that same account with that same config**, before starting the
+background service; Telegram login codes and two-step verification cannot be entered through
+the web interface or the service manager:
+
+```bash
+sudo chown tgmem:tgmem /var/lib/tgmem/config.toml
+sudo chmod 600 /var/lib/tgmem/config.toml
+sudo -H -u tgmem /opt/telegram-memory-cli/.venv/bin/tgmem --config /var/lib/tgmem/config.toml login
+sudo -H -u tgmem /opt/telegram-memory-cli/.venv/bin/tgmem --config /var/lib/tgmem/config.toml channels add @my_channel
+```
+
+`serve` reuses this session. It never prompts for Telegram login interactively. Stop the service
+before running another Telegram CLI operation with this session (including a fresh `login`).
+
+### Option A: systemd (recommended for a VM)
+
+The repository includes [deploy/tgmem.service](deploy/tgmem.service):
+
+```ini
+[Unit]
+Description=Telegram Memory web interface and API
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=tgmem
+Group=tgmem
+WorkingDirectory=/opt/telegram-memory-cli
+ExecStart=/opt/telegram-memory-cli/.venv/bin/tgmem --config /var/lib/tgmem/config.toml serve --host 0.0.0.0 --port 9080
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=45
+Environment=PYTHONUNBUFFERED=1
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Install, enable at boot, and start it:
+
+```bash
+sudo cp /opt/telegram-memory-cli/deploy/tgmem.service /etc/systemd/system/tgmem.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now tgmem
+sudo systemctl status tgmem --no-pager
+sudo journalctl -u tgmem -f
+```
+
+To restart or stop it:
+
+```bash
+sudo systemctl restart tgmem
+sudo systemctl stop tgmem
+```
+
+Change `--host` and `--port` in `/etc/systemd/system/tgmem.service` to suit your VM, then run
+`sudo systemctl daemon-reload` and `sudo systemctl restart tgmem`. After editing only
+`config.toml` (for example, the API token), a service restart is sufficient.
+
+### Option B: Supervisor
+
+On Debian/Ubuntu, install Supervisor and ensure its daemon starts at boot:
+
+```bash
+sudo apt-get install supervisor
+sudo systemctl enable --now supervisor
+sudo install -d -o tgmem -g tgmem -m 0750 /var/log/tgmem
+sudo cp /opt/telegram-memory-cli/deploy/supervisor.conf /etc/supervisor/conf.d/tgmem.conf
+```
+
+The included [deploy/supervisor.conf](deploy/supervisor.conf) contains:
+
+```ini
+[program:tgmem]
+command=/opt/telegram-memory-cli/.venv/bin/tgmem --config /var/lib/tgmem/config.toml serve --host 0.0.0.0 --port 9080
+directory=/opt/telegram-memory-cli
+user=tgmem
+autostart=true
+autorestart=unexpected
+startsecs=5
+startretries=3
+stopsignal=TERM
+stopwaitsecs=45
+stopasgroup=true
+killasgroup=true
+umask=0077
+environment=PYTHONUNBUFFERED="1"
+redirect_stderr=true
+stdout_logfile=/var/log/tgmem/server.log
+stdout_logfile_maxbytes=10MB
+stdout_logfile_backups=3
+```
+
+Load the program, check it, and follow its logs:
+
+```bash
+sudo supervisorctl reread
+sudo supervisorctl update
+sudo supervisorctl status tgmem
+sudo supervisorctl tail -f tgmem
+```
+
+For routine management:
+
+```bash
+sudo supervisorctl restart tgmem
+sudo supervisorctl stop tgmem
+sudo supervisorctl start tgmem
+```
+
+Change `command=` to select a different bind/port. After editing the Supervisor program
+configuration, use `reread` and `update`; after editing only `config.toml`, use `restart tgmem`.
+If it reaches `FATAL` because initial startup repeatedly failed, fix the configuration and use
+`sudo supervisorctl start tgmem`. Supervisor must itself be running for `autostart` to apply.
+Its include-directory conventions vary by distribution. Absolute data paths also avoid relying
+on Supervisor changing `HOME` when applying `user=tgmem` (it does not start a login shell).
+
+### Access, updates, and troubleshooting
+
+With the example bind, open `http://YOUR_VM_IP:9080` and enter the configured token on the
+connection screen. For a reverse proxy running on the same VM/network namespace, change the
+bind to `127.0.0.1` and proxy to that address/port instead. A proxy in another container cannot
+reach the VM's loopback address directly. Preserve the original `Host` and `Authorization`
+headers and configure HTTPS at the proxy. If direct LAN access fails, check the chosen IP/port
+and your VM's firewall. `0.0.0.0` is a listen address, not the address to open in your browser.
+
+For an update, stop **your chosen manager's** tgmem instance, update and reinstall the project,
+then start the same instance again. Example with systemd:
+
+```bash
+sudo systemctl stop tgmem
+sudo -H -u tgmem git -C /opt/telegram-memory-cli pull --ff-only
+sudo -H -u tgmem /opt/telegram-memory-cli/.venv/bin/python -m pip install --upgrade '/opt/telegram-memory-cli[web]'
+sudo systemctl start tgmem
+```
+
+For Supervisor, use `sudo supervisorctl stop tgmem` and `sudo supervisorctl start tgmem` around
+the same update commands. Do not run the service with multiple workers or enable a development
+reloader. Monitoring runs while the service is up; rules survive restarts. Interrupted jobs
+are marked as such after restart and are not automatically replayed, including uploads.
+
+If startup fails, inspect the manager's logs first. Common causes are an invalid Telegram API
+configuration, a missing server token for a network bind, a port already in use, or file paths
+not writable by the service account. A server that opens but cannot perform remote operations
+may need a valid Telegram session: stop it, rerun the interactive `login` command above, then
+start it again. These templates have been checked as configuration examples; the repository's
+browser/API tests do not verify your distribution's boot process or service installation.
+
+References: [systemd service directives](https://github.com/systemd/systemd/blob/main/man/systemd.service.xml),
+[systemd execution settings](https://github.com/systemd/systemd/blob/main/man/systemd.exec.xml),
+[Supervisor configuration](https://supervisord.org/configuration.html),
+[Supervisor subprocess environment](https://supervisord.org/subprocess.html).
 
 ## Upload from the CLI
 

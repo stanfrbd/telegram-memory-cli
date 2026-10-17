@@ -1,0 +1,21 @@
+[Unit]
+Description=Telegram Memory web interface and API
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=tgmem
+Group=tgmem
+WorkingDirectory=/opt/telegram-memory-cli
+ExecStart=/opt/telegram-memory-cli/.venv/bin/tgmem --config /var/lib/tgmem/config.toml serve --host 0.0.0.0 --port 9080
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=45
+Environment=PYTHONUNBUFFERED=1
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
