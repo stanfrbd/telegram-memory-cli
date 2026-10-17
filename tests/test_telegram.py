@@ -2,7 +2,12 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 
 from telegram_memory.archive import Archive
-from telegram_memory.telegram import download_message, search_channel, serialize_message, sync_channel
+from telegram_memory.telegram import (
+    download_message,
+    search_channel,
+    serialize_message,
+    sync_channel,
+)
 
 
 def test_serialize_message_keeps_plain_text_and_file_metadata():

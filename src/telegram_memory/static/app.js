@@ -1,0 +1,477 @@
+"use strict";
+const $ = (id) => document.getElementById(id);
+let token = "",
+  offset = 0,
+  hasMore = false,
+  activeJobs = false;
+const pageSize = 50;
+function el(tag, text, className) {
+  const node = document.createElement(tag);
+  if (text != null) node.textContent = text;
+  if (className) node.className = className;
+  return node;
+}
+function notice(message, error = false) {
+  $("notice").textContent = message;
+  $("notice").className = error ? "error" : "";
+  $("notice").hidden = false;
+}
+async function api(path, options = {}) {
+  const headers = new Headers(options.headers);
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+  if (options.body && !(options.body instanceof FormData))
+    headers.set("Content-Type", "application/json");
+  const response = await fetch(path, { ...options, headers });
+  if (!response.ok) {
+    let message;
+    try {
+      const data = await response.json();
+      message =
+        typeof data.detail === "string"
+          ? data.detail
+          : JSON.stringify(data.detail);
+    } catch {
+      message = response.statusText;
+    }
+    throw Error(message);
+  }
+  return response;
+}
+const json = async (path, options) => (await api(path, options)).json();
+const post = (path, body) =>
+  json(path, { method: "POST", body: JSON.stringify(body) });
+function guard(fn) {
+  return async (...args) => {
+    try {
+      await fn(...args);
+    } catch (error) {
+      notice(error.message, true);
+    }
+  };
+}
+function view(name) {
+  for (const section of document.querySelectorAll("main section"))
+    section.hidden = section.id !== `${name}-view`;
+  for (const button of document.querySelectorAll("nav button"))
+    button.classList.toggle("active", button.dataset.view === name);
+  $("breadcrumb").textContent = name[0].toUpperCase() + name.slice(1);
+}
+for (const button of document.querySelectorAll("nav button"))
+  button.onclick = () => view(button.dataset.view);
+$("auth").onclick = guard(async () => {
+  const value = prompt("API token (kept only in this page’s memory):");
+  if (value === null) return;
+  token = value;
+  await refresh();
+  notice("Connection updated.");
+});
+async function stats() {
+  const data = await json("/api/status");
+  $("stats").replaceChildren(
+    ...[
+      ["Messages indexed", data.stats.messages],
+      ["Saved channels", data.saved_channels],
+      ["Attachments", data.stats.files],
+      ["Downloaded", data.stats.downloads],
+    ].map(([label, count]) => {
+      const card = el("div", null, "stat");
+      card.append(el("span", label), el("strong", count.toLocaleString()));
+      return card;
+    }),
+  );
+}
+async function channels() {
+  const values = await json("/api/channels"),
+    selected = $("channel").value;
+  $("channel").replaceChildren(
+    new Option("All indexed channels", ""),
+    ...values.map((c) => new Option(c, c)),
+  );
+  $("channel").value = selected;
+  $("saved-channels").replaceChildren(...values.map((c) => new Option(c, c)));
+  $("channels").replaceChildren(
+    ...values.map((channel) => {
+      const card = el("div", null, "panel inline");
+      const text = el("strong", channel);
+      text.style.flex = "1";
+      const sync = el("button", "Sync");
+      sync.onclick = guard(async () =>
+        queued(await post("/api/sync", { channel })),
+      );
+      const remove = el("button", "Remove");
+      remove.onclick = guard(async () => {
+        await json("/api/channels", {
+          method: "DELETE",
+          body: JSON.stringify({ channel }),
+        });
+        await channels();
+        await stats();
+      });
+      card.append(text, sync, remove);
+      return card;
+    }),
+  );
+  if (!values.length)
+    $("channels").append(
+      el("div", "No saved channels yet. Add your first source above.", "empty"),
+    );
+}
+$("channel-form").onsubmit = guard(async (event) => {
+  event.preventDefault();
+  await post("/api/channels", { channel: $("new-channel").value.trim() });
+  $("new-channel").value = "";
+  await channels();
+  await stats();
+});
+function params() {
+  const values = new URLSearchParams({
+    q: $("query").value,
+    limit: pageSize,
+    offset,
+  });
+  for (const [key, id] of [
+    ["channel", "channel"],
+    ["media", "media"],
+    ["mime_type", "mime"],
+    ["after", "after"],
+    ["before", "before"],
+    ["min_size", "min-size"],
+    ["max_size", "max-size"],
+  ])
+    if ($(id).value) values.set(key, $(id).value);
+  if ($("favorites").checked) values.set("favorite", "true");
+  if ($("downloaded").checked) values.set("downloaded", "true");
+  return values;
+}
+function bytes(value) {
+  if (value == null) return "";
+  return value >= 1048576
+    ? (value / 1048576).toFixed(1) + " MB"
+    : (value / 1024).toFixed(1) + " KB";
+}
+async function saveFile(item) {
+  const response = await api(
+    "/api/downloads/file?" +
+      new URLSearchParams({
+        channel: item.channel_id,
+        message_id: item.message_id,
+      }),
+  );
+  const url = URL.createObjectURL(await response.blob());
+  const a = el("a");
+  a.href = url;
+  a.download = item.file_name || "download";
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+function messageCard(item) {
+  const card = el("article", null, "card"),
+    top = el("div", null, "card-top");
+  top.append(
+    el("span", item.channel_name, "channel-tag"),
+    el("span", `#${item.message_id}`),
+    el("span", item.sent_at ? new Date(item.sent_at).toLocaleString() : ""),
+  );
+  card.append(top);
+  if (item.text) card.append(el("p", item.text));
+  if (item.file_name)
+    card.append(
+      el(
+        "div",
+        `${item.file_name}  ·  ${item.mime_type || "File"}  ·  ${bytes(item.file_size)}`,
+        "attachment",
+      ),
+    );
+  const actions = el("div", null, "actions"),
+    favorite = el("button", item.favorite ? "★ Favorited" : "☆ Favorite");
+  favorite.onclick = guard(async () => {
+    await post("/api/favorites", {
+      channel: item.channel_id,
+      message_id: item.message_id,
+      favorite: !item.favorite,
+    });
+    await search();
+  });
+  actions.append(favorite);
+  if (item.message_url && /^https:\/\/t\.me\//.test(item.message_url)) {
+    const link = el("a", "Open in Telegram ↗");
+    link.href = item.message_url;
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    actions.append(link);
+  }
+  if (item.file_name) {
+    const download = el(
+      "button",
+      item.file_path ? "Save to device ↓" : "Download ↓",
+    );
+    download.onclick = guard(async () => {
+      if (item.file_path) await saveFile(item);
+      else
+        queued(
+          await post("/api/downloads", {
+            channel: /^\d+$/.test(item.channel_id)
+              ? `-100${item.channel_id}`
+              : item.channel_id,
+            message_id: item.message_id,
+          }),
+        );
+    });
+    actions.append(download);
+  }
+  card.append(actions);
+  return card;
+}
+async function search() {
+  const data = await json("/api/search?" + params());
+  hasMore = data.has_more;
+  $("results").replaceChildren(...data.results.map(messageCard));
+  if (!data.results.length)
+    $("results").append(
+      el(
+        "div",
+        "Nothing here yet. Add channels and sync them, or adjust your search.",
+        "empty",
+      ),
+    );
+  $("result-title").textContent =
+    `${$("query").value ? "Search results" : "Recent messages"} · ${data.results.length}${hasMore ? "+" : ""}`;
+  $("previous").disabled = offset === 0;
+  $("next").disabled = !hasMore;
+  $("page").textContent = `Page ${Math.floor(offset / pageSize) + 1}`;
+}
+$("search-form").onsubmit = guard(async (event) => {
+  event.preventDefault();
+  offset = 0;
+  await search();
+});
+$("previous").onclick = guard(async () => {
+  offset = Math.max(0, offset - pageSize);
+  await search();
+});
+$("next").onclick = guard(async () => {
+  offset += pageSize;
+  await search();
+});
+function queued(job) {
+  notice(
+    `Job queued (${job.job_id.slice(0, 8)}). Follow progress in Transfers.`,
+  );
+  activeJobs = true;
+  guard(jobs)();
+}
+$("sync-all").onclick = guard(async () =>
+  queued(await post("/api/sync", { channel: $("channel").value || null })),
+);
+$("remote").onclick = guard(async () => {
+  if (!$("query").value.trim()) throw Error("Enter a search query first.");
+  queued(
+    await post(
+      {
+        account: "/api/search/account",
+        public: "/api/search/public",
+        saved: "/api/search/remote",
+      }[$("remote-scope").value],
+      {
+        query: $("query").value,
+        channel: $("channel").value || null,
+        limit: 100,
+      },
+    ),
+  );
+});
+$("upload-form").onsubmit = guard(async (event) => {
+  event.preventDefault();
+  const form = event.currentTarget,
+    button = form.querySelector("button");
+  button.disabled = true;
+  try {
+    const data = new FormData(form);
+    data.set("document", form.elements.document.checked ? "true" : "false");
+    queued(await json("/api/uploads", { method: "POST", body: data }));
+    form.reset();
+    view("transfers");
+  } finally {
+    button.disabled = false;
+  }
+});
+async function jobs() {
+  const rows = await json("/api/jobs");
+  const wasActive = activeJobs;
+  activeJobs = rows.some((r) => ["queued", "running"].includes(r.status));
+  $("jobs").replaceChildren(
+    ...rows.map((job) => {
+      const card = el("article", null, "card"),
+        title = el("div", null, "job-title");
+      title.append(el("strong", job.kind), el("span", job.status, "badge"));
+      card.append(
+        title,
+        el("p", `${job.created_at} · ${job.id.slice(0, 8)}`, "hint"),
+      );
+      if (job.error) card.append(el("p", job.error));
+      if (job.result) {
+        card.append(
+          el("pre", JSON.stringify(job.result, null, 2), "job-result"),
+        );
+        if (job.result.channels) {
+          const show = el("button", "Show discovered channels");
+          show.onclick = () => {
+            renderDiscovery(job.result.channels);
+            view("discover");
+          };
+          card.append(show);
+        }
+        if (
+          job.result.results &&
+          ["search", "account-search", "public-search"].includes(job.kind)
+        ) {
+          const show = el("button", "Show returned messages");
+          show.onclick = () => {
+            $("results").replaceChildren(
+              ...job.result.results.map(messageCard),
+            );
+            $("result-title").textContent = "Telegram results";
+            view("search");
+          };
+          card.append(show);
+        }
+      }
+      return card;
+    }),
+  );
+  if (!rows.length)
+    $("jobs").append(
+      el("div", "No transfers yet. Your activity will appear here.", "empty"),
+    );
+  if (wasActive && !activeJobs) {
+    await stats();
+    await search();
+    notice(
+      "Jobs finished. Check Transfers for results and any channel errors.",
+    );
+  }
+}
+async function refresh() {
+  await channels();
+  await stats();
+  await search();
+  await jobs();
+  await rules();
+}
+guard(refresh)();
+setInterval(() => guard(jobs)(), 3000);
+
+function renderDiscovery(channels) {
+  $("discovery-results").replaceChildren(
+    ...channels.map((channel) => {
+      const card = el("article", null, "card"),
+        add = el("button", "Save channel");
+      card.append(
+        el("h2", channel.title),
+        el("p", `${channel.reference} · ${channel.kind}`),
+      );
+      add.onclick = guard(async () => {
+        await post("/api/channels", { channel: channel.reference });
+        await refresh();
+        notice("Source saved. Sync it to index its messages.");
+      });
+      card.append(add);
+      return card;
+    }),
+  );
+  if (!channels.length)
+    $("discovery-results").append(
+      el("div", "Telegram returned no matching public channels.", "empty"),
+    );
+}
+$("discover-form").onsubmit = guard(async (event) => {
+  event.preventDefault();
+  const job = await post("/api/discover", {
+    query: $("discover-query").value,
+    limit: 50,
+  });
+  queued(job);
+  const timer = setInterval(async () => {
+    try {
+      const state = await json("/api/jobs/" + job.job_id);
+      if (!["queued", "running"].includes(state.status)) {
+        clearInterval(timer);
+        if (state.result?.channels) renderDiscovery(state.result.channels);
+        if (state.error) notice(state.error, true);
+      }
+    } catch (error) {
+      clearInterval(timer);
+      notice(error.message, true);
+    }
+  }, 1500);
+});
+$("rule-form").onsubmit = guard(async (event) => {
+  event.preventDefault();
+  const form = event.currentTarget;
+  await post("/api/rules", {
+    query: form.elements.query.value,
+    channel: form.elements.channel.value || null,
+    interval: Number(form.elements.interval.value) * 60,
+  });
+  await rules();
+  notice(
+    "Monitoring rule created. Keep the server running for scheduled checks.",
+  );
+});
+async function rules() {
+  const rows = await json("/api/rules");
+  $("rules").replaceChildren(
+    ...rows.map((rule) => {
+      const card = el("article", null, "card");
+      card.append(
+        el("h2", rule.query),
+        el(
+          "p",
+          `${rule.channel || "All saved channels"} · every ${rule.interval / 60} min · ${rule.enabled ? "Enabled" : "Paused"}`,
+          "hint",
+        ),
+      );
+      if (rule.last_error) card.append(el("p", rule.last_error));
+      const actions = el("div", null, "actions");
+      for (const [label, fn] of [
+        [
+          "View matches",
+          async () => {
+            $("hits-title").textContent = "Matches: " + rule.query;
+            const hits = await json("/api/rules/" + rule.id + "/hits");
+            $("rule-hits").replaceChildren(...hits.map(messageCard));
+            if (!hits.length)
+              $("rule-hits").append(el("p", "No matches recorded yet."));
+          },
+        ],
+        [
+          "Run now",
+          async () => queued(await post("/api/rules/" + rule.id + "/run", {})),
+        ],
+        [
+          rule.enabled ? "Pause" : "Resume",
+          async () => {
+            await json(
+              "/api/rules/" + rule.id + "/enabled?enabled=" + !rule.enabled,
+              { method: "PUT" },
+            );
+            await rules();
+          },
+        ],
+        [
+          "Delete",
+          async () => {
+            await json("/api/rules/" + rule.id, { method: "DELETE" });
+            await rules();
+          },
+        ],
+      ]) {
+        const button = el("button", label);
+        button.onclick = guard(fn);
+        actions.append(button);
+      }
+      card.append(actions);
+      return card;
+    }),
+  );
+}

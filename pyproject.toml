@@ -1,21 +1,23 @@
 [build-system]
-requires = ["setuptools>=69", "wheel"]
+requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "telegram-memory-cli"
-version = "0.1.0"
+version = "0.2.0"
 description = "A local-first Telegram archive and search CLI for people and AI agents."
 readme = "README.md"
 requires-python = ">=3.11"
-license = { file = "LICENSE" }
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [{ name = "Stan" }]
 dependencies = [
   "Telethon>=1.45,<2",
 ]
 
 [project.optional-dependencies]
-test = ["pytest>=8.0", "pytest-asyncio>=0.23"]
+web = ["fastapi>=0.115,<1", "uvicorn>=0.30,<1", "python-multipart>=0.0.18"]
+test = ["pytest>=8.0", "pytest-asyncio>=0.23", "httpx>=0.27", "fastapi>=0.115,<1", "python-multipart>=0.0.18"]
 
 [project.scripts]
 tgmem = "telegram_memory.cli:main"
@@ -30,3 +32,6 @@ asyncio_mode = "auto"
 [tool.ruff]
 line-length = 100
 target-version = "py311"
+
+[tool.setuptools.package-data]
+telegram_memory = ["static/*"]

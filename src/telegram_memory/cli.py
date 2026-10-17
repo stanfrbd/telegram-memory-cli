@@ -8,14 +8,26 @@ from pathlib import Path
 from typing import Any
 
 from .archive import Archive
-from .config import Config, default_config_path, initialize, read_channels, write_channels
-from .telegram import download_message, login, search_channel, sync_channel
+from .config import (
+    Config,
+    default_config_path,
+    initialize,
+    read_channels,
+    write_channels,
+)
+from .telegram import (
+    download_message,
+    login,
+    search_channels,
+    sync_channel,
+    upload_file,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="tgmem",
-        description="Search and archive Telegram messages locally. Commands are read-only on Telegram.",
+        description="Search and archive Telegram messages locally. Includes explicit file uploads.",
     )
     parser.add_argument("--config", type=Path, default=None, help="Path to config.toml.")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -86,6 +98,23 @@ def build_parser() -> argparse.ArgumentParser:
     list_favorites.add_argument("--limit", type=int, default=100)
     list_favorites.add_argument("--json", action="store_true")
 
+    upload = commands.add_parser("upload", help="Send a local file to Telegram.")
+    upload.add_argument("file", type=Path)
+    upload.add_argument("--channel", required=True)
+    upload.add_argument("--caption", default="")
+    upload.add_argument("--document", action="store_true", help="Preserve as a document.")
+    upload.add_argument("--json", action="store_true")
+
+    serve = commands.add_parser("serve", help="Start the web interface and REST API.")
+    serve.add_argument("--host", default="127.0.0.1")
+    serve.add_argument("--port", type=int, default=8765)
+    serve.add_argument("--token", help="API token (prefer TGMEM_API_TOKEN environment variable).")
+    for target in (find_parser,):
+        target.add_argument("--media", choices=["image", "video", "audio", "document", "text"])
+        target.add_argument("--mime-type", help="Exact MIME or wildcard, e.g. image/*.")
+        target.add_argument("--after")
+        target.add_argument("--before")
+        target.add_argument("--offset", type=int, default=0)
     return parser
 
 
@@ -131,7 +160,12 @@ async def _run_remote(args: argparse.Namespace, config: Config) -> int:
                 for target in targets:
                     count = await sync_channel(client, archive, target, limit=limit)
                     results.append({"channel": target, "indexed_messages": count})
-            _emit(results if args.json else [f"{x['channel']}: indexed {x['indexed_messages']} messages" for x in results])
+            _emit(
+                results
+                if args.json
+                else [f"{x['channel']}: indexed {x['indexed_messages']} messages" for x in results],
+                args.json,
+            )
             return 0
 
         if args.command == "search":
@@ -139,10 +173,19 @@ async def _run_remote(args: argparse.Namespace, config: Config) -> int:
             if not targets:
                 raise ValueError("No channels configured. Add one or pass --channel.")
             with _open_archive(config) as archive:
-                results = []
-                for target in targets:
-                    results.extend(await search_channel(client, archive, target, args.query, args.limit))
-            _emit(results if args.json else [_message_summary(item) for item in results])
+                outcome = await search_channels(client, archive, targets, args.query, args.limit)
+            results = outcome["results"]
+            for error in outcome["errors"]:
+                print(f"tgmem: {error['channel']}: {error['error']}", file=sys.stderr)
+            _emit(results if args.json else [_message_summary(item) for item in results], args.json)
+            return 0
+
+        if args.command == "upload":
+            with _open_archive(config) as archive:
+                item = await upload_file(
+                    client, archive, args.channel, args.file, args.caption, args.document
+                )
+            _emit(item if args.json else _message_summary(item), args.json)
             return 0
 
         if args.command == "download":
@@ -153,7 +196,7 @@ async def _run_remote(args: argparse.Namespace, config: Config) -> int:
                 )
             if path is None:
                 raise ValueError("The selected message has no downloadable media.")
-            _emit({"downloaded": True, "path": str(path)} if args.json else path)
+            _emit({"downloaded": True, "path": str(path)} if args.json else path, args.json)
             return 0
     finally:
         await client.disconnect()
@@ -171,10 +214,22 @@ def run(args: argparse.Namespace) -> int:
 
     config = _load_config(args)
 
+    if args.command == "serve":
+        try:
+            from .web import serve
+        except ImportError as exc:
+            raise ValueError(
+                "Install the web extra: pip install 'telegram-memory-cli[web]'"
+            ) from exc
+        serve(config, args.host, args.port, args.token)
+        return 0
+
     if args.command == "login":
+
         async def do_login() -> None:
             client = await login(config)
             await client.disconnect()
+
         asyncio.run(do_login())
         print(f"Telegram session saved at {config.session_path}")
         return 0
@@ -187,21 +242,31 @@ def run(args: argparse.Namespace) -> int:
             write_channels(config.channels_path, [*channels, args.channel])
             _emit({"added": args.channel}, args.json)
         else:
-            remaining = [channel for channel in channels if channel.casefold() != args.channel.casefold()]
+            remaining = [
+                channel for channel in channels if channel.casefold() != args.channel.casefold()
+            ]
             if len(remaining) == len(channels):
                 raise ValueError(f"Channel not found in list: {args.channel}")
             write_channels(config.channels_path, remaining)
             _emit({"removed": args.channel}, args.json)
         return 0
 
-    if args.command in {"sync", "search", "download"}:
+    if args.command in {"sync", "search", "download", "upload"}:
         return asyncio.run(_run_remote(args, config))
 
     if args.command in {"find", "files"}:
         with _open_archive(config) as archive:
             if args.command == "find":
                 results = archive.search(
-                    args.query, channel=args.channel, files_only=args.files_only, limit=args.limit
+                    args.query,
+                    channel=args.channel,
+                    files_only=args.files_only,
+                    limit=args.limit,
+                    media=args.media,
+                    mime_type=args.mime_type,
+                    after=args.after,
+                    before=args.before,
+                    offset=args.offset,
                 )
                 as_json = args.json
             else:
@@ -227,7 +292,9 @@ def run(args: argparse.Namespace) -> int:
                     args.channel, args.message_id, args.favorite_action == "add"
                 )
                 if not success:
-                    raise ValueError("Message is not in the local archive. Run sync or search first.")
+                    raise ValueError(
+                        "Message is not in the local archive. Run sync or search first."
+                    )
                 verb = "Added" if args.favorite_action == "add" else "Removed"
                 print(f"{verb} favorite: {args.channel} #{args.message_id}")
             else:

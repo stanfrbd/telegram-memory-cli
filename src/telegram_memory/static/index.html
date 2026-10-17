@@ -1,0 +1,241 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Telegram Memory</title>
+    <link rel="stylesheet" href="/style.css" />
+    <script src="/app.js" defer></script>
+  </head>
+  <body>
+    <aside>
+      <a class="brand" href="/"
+        >↗ <span>Telegram<br /><b>Memory</b></span></a
+      >
+      <p class="eyebrow">YOUR WORKSPACE</p>
+      <nav>
+        <button class="active" data-view="search">⌕ Search archive</button
+        ><button data-view="channels">▤ Channels</button
+        ><button data-view="transfers">↓ Transfers</button
+        ><button data-view="discover">◎ Discover</button
+        ><button data-view="monitor">◷ Monitoring</button
+        ><button data-view="upload">↑ Upload</button>
+      </nav>
+      <div class="aside-bottom">
+        <span class="dot"></span> Local-first workspace<br /><small
+          >Your index. Your Telegram.</small
+        >
+      </div>
+    </aside>
+    <main>
+      <header>
+        <span
+          >WORKSPACE <span class="muted">/</span>
+          <span id="breadcrumb">Search</span></span
+        ><button id="auth">Set API token</button
+        ><span class="badge">SQLite archive</span>
+      </header>
+      <div id="notice" role="status" hidden></div>
+      <section id="search-view">
+        <div class="heading">
+          <div>
+            <p class="eyebrow">FIND WHAT YOU SAVED</p>
+            <h1>Your Telegram, searchable.</h1>
+            <p class="muted">
+              Messages, files, and ideas — across all your channels.
+            </p>
+          </div>
+          <button id="sync-all">↻ Sync channels</button>
+        </div>
+        <div id="stats" class="stats"></div>
+        <form id="search-form">
+          <div class="searchbox">
+            <span>⌕</span
+            ><input
+              id="query"
+              placeholder="Search messages, captions, or filenames…"
+              aria-label="Search query"
+            /><button class="primary">Search</button>
+          </div>
+          <div class="filters">
+            <label
+              >Channel<select id="channel">
+                <option value="">All indexed channels</option>
+              </select></label
+            ><label
+              >Media<select id="media">
+                <option value="">All media</option>
+                <option value="image">Images</option>
+                <option value="video">Videos</option>
+                <option value="audio">Audio</option>
+                <option value="document">Documents</option>
+                <option value="text">Text only</option>
+              </select></label
+            ><label
+              >MIME type<input
+                id="mime"
+                placeholder="e.g. application/pdf" /></label
+            ><label>From<input id="after" type="date" /></label
+            ><label>Until<input id="before" type="date" /></label>
+          </div>
+          <details>
+            <summary>More filters</summary>
+            <div class="filters">
+              <label
+                >Minimum bytes<input
+                  id="min-size"
+                  type="number"
+                  min="0" /></label
+              ><label
+                >Maximum bytes<input
+                  id="max-size"
+                  type="number"
+                  min="0" /></label
+              ><label class="check"
+                ><input id="favorites" type="checkbox" />Favorites only</label
+              ><label class="check"
+                ><input id="downloaded" type="checkbox" />Downloaded only</label
+              >
+            </div>
+          </details>
+        </form>
+        <div class="results-heading">
+          <h2 id="result-title">Recent messages</h2>
+          <div>
+            <select id="remote-scope" aria-label="Telegram search scope">
+              <option value="saved">Saved channels</option>
+              <option value="account">Account conversations</option>
+              <option value="public">Public posts (free quota)</option>
+            </select>
+            <button id="remote">Search on Telegram ↗</button>
+          </div>
+        </div>
+        <p class="hint">
+          Archive search works offline. Telegram search indexes returned
+          messages; apply media filters here afterwards. Public-post search uses
+          free quota only and may require Premium.
+        </p>
+        <div id="results"></div>
+        <div class="pagination">
+          <button id="previous">← Previous</button><span id="page"></span
+          ><button id="next">Next →</button>
+        </div>
+      </section>
+      <section id="channels-view" hidden>
+        <p class="eyebrow">YOUR SOURCES</p>
+        <h1>Channels</h1>
+        <p class="muted">
+          Manage the saved list. Adding a channel does not join it on Telegram.
+        </p>
+        <form id="channel-form" class="panel inline">
+          <input
+            id="new-channel"
+            placeholder="@channel, https://t.me/channel or -100…"
+            required
+          /><button class="primary">Add channel</button>
+        </form>
+        <div id="channels"></div>
+      </section>
+      <section id="transfers-view" hidden>
+        <p class="eyebrow">ACTIVITY</p>
+        <h1>Transfers & jobs</h1>
+        <p class="muted">
+          Searches, syncs, uploads, and downloads. Refreshes automatically.
+        </p>
+        <div id="jobs"></div>
+      </section>
+      <section id="discover-view" hidden>
+        <p class="eyebrow">EXPLORE TELEGRAM</p>
+        <h1>Discover sources</h1>
+        <p class="muted">
+          Find public channels and groups by name or username. Telegram ranks
+          and limits these results.
+        </p>
+        <form id="discover-form" class="panel inline">
+          <input
+            id="discover-query"
+            placeholder="e.g. cybersecurity"
+            minlength="3"
+            required
+          /><button class="primary">Find channels</button>
+        </form>
+        <div id="discovery-results"></div>
+        <p class="hint">
+          Discovery does not join channels. Save a source to include it in
+          searches and monitoring.
+        </p>
+      </section>
+      <section id="monitor-view" hidden>
+        <p class="eyebrow">KEEP AN EYE ON A TOPIC</p>
+        <h1>Keyword monitoring</h1>
+        <p class="muted">
+          Periodic Telegram searches while this server is running. Matches stay
+          in your local archive.
+        </p>
+        <form id="rule-form" class="panel upload">
+          <label
+            >Keyword or phrase<input
+              name="query"
+              placeholder="e.g. company name, CVE, threat actor"
+              required /></label
+          ><label
+            >Channel (blank = saved channels)<input
+              name="channel"
+              placeholder="@channel"
+              list="saved-channels" /></label
+          ><label
+            >Interval in minutes<input
+              name="interval"
+              type="number"
+              value="60"
+              min="5"
+              max="10080"
+              required /></label
+          ><button class="primary">Create monitoring rule</button>
+          <p class="hint">
+            At least 5 minutes. Results depend on Telegram search indexing and
+            rate limits. This is polling, not a guaranteed real-time feed.
+          </p>
+        </form>
+        <div id="rules"></div>
+        <h2 id="hits-title">Rule matches</h2>
+        <div id="rule-hits"></div>
+      </section>
+      <section id="upload-view" hidden>
+        <p class="eyebrow">SEND TO TELEGRAM</p>
+        <h1>Upload a file</h1>
+        <p class="muted">
+          Send a file to a channel you can post in, or to Saved Messages with
+          “me”.
+        </p>
+        <form id="upload-form" class="panel upload">
+          <label
+            >Destination<input
+              name="channel"
+              placeholder="@my_channel or me"
+              required
+              list="saved-channels" /></label
+          ><datalist id="saved-channels"></datalist
+          ><label>File<input name="file" type="file" required /></label
+          ><label
+            >Caption<textarea
+              name="caption"
+              placeholder="Add a caption (optional)"
+            ></textarea></label
+          ><label class="check"
+            ><input name="document" type="checkbox" />Send as document (preserve
+            original file)</label
+          ><button class="primary">Upload to Telegram ↑</button>
+          <p class="hint">
+            Maximum 2 GiB per web upload. The destination is explicit; this
+            sends a new Telegram message.
+          </p>
+        </form>
+      </section>
+      <footer>
+        TELEGRAM MEMORY
+        <span>Private by default. Powered by your local archive.</span>
+      </footer>
+    </main>
+  </body>
+</html>

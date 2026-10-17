@@ -110,11 +110,13 @@ file = "channels.txt"
 def read_channels(path: Path) -> list[str]:
     if not path.exists():
         return []
-    return list(dict.fromkeys(
-        value
-        for line in path.read_text(encoding="utf-8").splitlines()
-        if (value := line.strip()) and not value.startswith("#")
-    ))
+    return list(
+        dict.fromkeys(
+            value
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if (value := line.strip()) and not value.startswith("#")
+        )
+    )
 
 
 def write_channels(path: Path, channels: list[str]) -> None:

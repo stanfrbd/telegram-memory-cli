@@ -16,8 +16,7 @@ def test_config_load_resolves_relative_channels_file(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
     config_path, channels_path = initialize(tmp_path / "config" / "config.toml")
     config_path.write_text(
-        '[telegram]\napi_id = 123\napi_hash = "abc"\n'
-        '[channels]\nfile = "channels.txt"\n',
+        '[telegram]\napi_id = 123\napi_hash = "abc"\n[channels]\nfile = "channels.txt"\n',
         encoding="utf-8",
     )
 

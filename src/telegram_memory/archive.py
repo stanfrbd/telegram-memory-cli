@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import sqlite3
 import os
+import sqlite3
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -18,6 +18,8 @@ class Archive:
             path.chmod(0o600)
         self.connection.row_factory = sqlite3.Row
         self.connection.execute("PRAGMA foreign_keys = ON")
+        self.connection.execute("PRAGMA journal_mode = WAL")
+        self.connection.execute("PRAGMA busy_timeout = 5000")
         self._create_schema()
 
     def _create_schema(self) -> None:
@@ -75,9 +77,7 @@ class Archive:
                 "SELECT rowid FROM messages WHERE channel_id=? AND message_id=?",
                 (message["channel_id"], message["message_id"]),
             ).fetchone()
-            self.connection.execute(
-                "DELETE FROM message_fts WHERE rowid=?", (row["rowid"],)
-            )
+            self.connection.execute("DELETE FROM message_fts WHERE rowid=?", (row["rowid"],))
             self.connection.execute(
                 """INSERT INTO message_fts(rowid, channel_id, channel_name, text, file_name)
                    VALUES (?, ?, ?, ?, ?)""",
@@ -92,51 +92,83 @@ class Archive:
         self.connection.commit()
 
     def search(
-        self, query: str, channel: str | None = None, files_only: bool = False, limit: int = 50
+        self,
+        query: str = "",
+        channel: str | None = None,
+        files_only: bool = False,
+        limit: int = 50,
+        *,
+        media: str | None = None,
+        mime_type: str | None = None,
+        after: str | None = None,
+        before: str | None = None,
+        favorite: bool = False,
+        downloaded: bool = False,
+        offset: int = 0,
+        min_size: int | None = None,
+        max_size: int | None = None,
     ) -> list[dict[str, Any]]:
-        terms = query.strip()
-        if not terms:
-            return []
-        filters = []
+        filters = ["1=1"]
         parameters: list[Any] = []
         if channel:
             channel_id, channel_name = _normalize_channel_ref(channel)
             filters.append("(m.channel_id=? OR lower(m.channel_name)=lower(?))")
             parameters.extend([channel_id, channel_name])
-        if files_only:
+        if files_only or media == "document":
             filters.append("m.file_name IS NOT NULL")
-        where = (" AND " + " AND ".join(filters)) if filters else ""
-        if self.fts_enabled:
-            phrase = '"' + terms.replace('"', '""') + '"'
-            sql = f"""
-                SELECT m.* FROM message_fts f
-                JOIN messages m ON m.rowid=f.rowid
-                WHERE message_fts MATCH ? {where}
-                ORDER BY m.sent_at DESC LIMIT ?
-            """
-            try:
-                rows = self.connection.execute(sql, [phrase, *parameters, limit]).fetchall()
-            except sqlite3.OperationalError:
-                pattern = f"%{terms.lower()}%"
-                fallback_sql = f"""
-                    SELECT * FROM messages
-                    WHERE (lower(text) LIKE ? OR lower(COALESCE(file_name, '')) LIKE ?) {where.replace('m.', '')}
-                    ORDER BY sent_at DESC LIMIT ?
-                """
-                rows = self.connection.execute(
-                    fallback_sql, [pattern, pattern, *parameters, limit]
-                ).fetchall()
-        else:
-            pattern = f"%{terms.lower()}%"
-            sql = f"""
-                SELECT * FROM messages
-                WHERE (lower(text) LIKE ? OR lower(COALESCE(file_name, '')) LIKE ?) {where}
-                ORDER BY sent_at DESC LIMIT ?
-            """
-            rows = self.connection.execute(
-                sql, [pattern, pattern, *parameters, limit]
-            ).fetchall()
+        if media in {"image", "video", "audio"}:
+            filters.append("lower(m.mime_type) LIKE ?")
+            parameters.append(media + "/%")
+        elif media == "document":
+            filters.append(
+                "COALESCE(m.mime_type, '') NOT LIKE 'image/%' AND "
+                "COALESCE(m.mime_type, '') NOT LIKE 'video/%' AND "
+                "COALESCE(m.mime_type, '') NOT LIKE 'audio/%'"
+            )
+        elif media == "text":
+            filters.append("m.file_name IS NULL")
+        elif media:
+            raise ValueError("Unknown media type.")
+        if mime_type:
+            filters.append("lower(COALESCE(m.mime_type, '')) LIKE ?")
+            parameters.append(mime_type.lower().replace("*", "%"))
+        for value, column, operator in [
+            (after, "sent_at", ">="),
+            (before, "sent_at", "<="),
+            (min_size, "file_size", ">="),
+            (max_size, "file_size", "<="),
+        ]:
+            if value is not None:
+                filters.append(f"m.{column} {operator} ?")
+                parameters.append(
+                    _normalize_date(value, end=operator == "<=") if column == "sent_at" else value
+                )
+        if favorite:
+            filters.append("m.favorite=1")
+        if downloaded:
+            filters.append("m.file_path IS NOT NULL")
+        terms = query.strip()
+        join = ""
+        if terms and self.fts_enabled:
+            join = "JOIN message_fts ON message_fts.rowid=m.rowid"
+            filters.append("message_fts MATCH ?")
+            parameters.append('"' + terms.replace('"', '""') + '"')
+        elif terms:
+            filters.append("(lower(m.text) LIKE ? OR lower(COALESCE(m.file_name,'')) LIKE ?)")
+            parameters.extend([f"%{terms.lower()}%"] * 2)
+        rows = self.connection.execute(
+            f"SELECT m.* FROM messages m {join} WHERE {' AND '.join(filters)} "
+            "ORDER BY m.sent_at DESC, m.channel_id, m.message_id DESC LIMIT ? OFFSET ?",
+            [*parameters, max(1, min(limit, 1001)), max(0, offset)],
+        ).fetchall()
         return [dict(row) for row in rows]
+
+    def stats(self) -> dict[str, int]:
+        row = self.connection.execute(
+            "SELECT count(*) messages, count(DISTINCT channel_id) channels, "
+            "count(file_name) files, count(file_path) downloads FROM messages"
+        ).fetchone()
+        return dict(row)
 
     def list_files(
         self,
@@ -177,7 +209,7 @@ class Archive:
         if favorite:
             filters.append("favorite=1")
         rows = self.connection.execute(
-            f"""SELECT * FROM messages WHERE {' AND '.join(filters)}
+            f"""SELECT * FROM messages WHERE {" AND ".join(filters)}
                 ORDER BY sent_at DESC LIMIT ?""",
             [*parameters, limit],
         ).fetchall()
@@ -232,7 +264,9 @@ def _normalize_date(value: str, end: bool) -> str:
     try:
         parsed = datetime.fromisoformat(value)
     except ValueError as exc:
-        raise ValueError(f"Invalid date '{value}'. Use YYYY-MM-DD or an ISO 8601 timestamp.") from exc
+        raise ValueError(
+            f"Invalid date '{value}'. Use YYYY-MM-DD or an ISO 8601 timestamp."
+        ) from exc
     if len(value) == 10:
         parsed = parsed.replace(hour=23, minute=59, second=59) if end else parsed
     return parsed.isoformat()
@@ -242,7 +276,7 @@ def _normalize_channel_ref(value: str) -> tuple[str, str]:
     ref = value.strip()
     for prefix in ("https://t.me/", "http://t.me/", "t.me/"):
         if ref.lower().startswith(prefix):
-            ref = ref[len(prefix):].split("/", 1)[0]
+            ref = ref[len(prefix) :].split("/", 1)[0]
             break
     ref = ref.lstrip("@")
     if ref.startswith("-100") and ref[4:].isdigit():
