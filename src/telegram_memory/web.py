@@ -143,6 +143,10 @@ def create_app(
     async def javascript():
         return FileResponse(static / "app.js", media_type="text/javascript")
 
+    @app.get("/theme.js", include_in_schema=False)
+    async def theme_script():
+        return FileResponse(static / "theme.js", media_type="text/javascript")
+
     @app.get("/style.css", include_in_schema=False)
     async def stylesheet():
         return FileResponse(static / "style.css", media_type="text/css")

@@ -97,6 +97,14 @@ def test_desktop_end_to_end(browser, tmp_path):
             ),
         )
         page.goto(base)
+        page.get_by_role("button", name="Switch to dark mode", exact=True).click()
+        playwright.expect(page.locator("html")).to_have_attribute("data-theme", "dark")
+        assert (
+            page.locator(".stat").first.evaluate("node => getComputedStyle(node).backgroundColor")
+            == "rgb(27, 39, 33)"
+        )
+        page.reload()
+        playwright.expect(page.locator("html")).to_have_attribute("data-theme", "dark")
         playwright.expect(page.locator("#results .card")).to_have_count(50)
         page.locator("#next").click()
         playwright.expect(page.locator("#page")).to_have_text("Page 2")
@@ -236,7 +244,9 @@ def test_mobile_auth_and_layout(browser, tmp_path):
         )
         errors = []
         page.on("pageerror", lambda error: errors.append(str(error)))
+        page.emulate_media(color_scheme="dark")
         page.goto(base)
+        playwright.expect(page.locator("html")).to_have_attribute("data-theme", "dark")
         expect_notice(page, "Bearer token")
         page.once("dialog", lambda dialog: dialog.accept("browser-test-token"))
         page.get_by_role("button", name="Set API token", exact=True).click()
@@ -250,6 +260,10 @@ def test_mobile_auth_and_layout(browser, tmp_path):
             assert page.evaluate("document.documentElement.scrollWidth <= innerWidth"), (
                 f"Overflow in {section}"
             )
+        page.get_by_role("button", name="Switch to light mode", exact=True).click()
+        playwright.expect(page.locator("html")).to_have_attribute("data-theme", "light")
+        page.reload()
+        playwright.expect(page.locator("html")).to_have_attribute("data-theme", "light")
         assert not errors, errors
         page.close()
 

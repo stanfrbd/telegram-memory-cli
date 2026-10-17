@@ -125,6 +125,9 @@ tgmem --config /path/to/config.toml serve --port 9000
 ```
 
 Open **http://127.0.0.1:8765**. No Node build or external frontend assets are needed.
+Use the header's Dark/Light button to switch themes. On the first visit, the interface follows
+your system theme; an explicit choice is saved in this browser and retained after reloads.
+The theme is applied before the stylesheet loads to prevent a flash of the wrong background.
 Authenticate once using `tgmem login` before remote operations. The server connects lazily;
 local archive searches work without a live Telegram connection. Stop with Ctrl+C and run the
 same command to restart. Run one server worker and avoid simultaneous CLI Telegram commands

@@ -4,6 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Telegram Memory</title>
+    <script src="/theme.js"></script>
     <link rel="stylesheet" href="/style.css" />
     <script src="/app.js" defer></script>
   </head>
@@ -32,8 +33,18 @@
         <span
           >WORKSPACE <span class="muted">/</span>
           <span id="breadcrumb">Search</span></span
-        ><button id="auth">Set API token</button
-        ><span class="badge">SQLite archive</span>
+        >
+        <div class="header-actions">
+          <button
+            id="theme-toggle"
+            aria-label="Switch to dark mode"
+            aria-pressed="false"
+          >
+            ☾ Dark
+          </button>
+          <button id="auth">Set API token</button>
+          <span class="badge">SQLite archive</span>
+        </div>
       </header>
       <div id="notice" role="status" hidden></div>
       <section id="search-view">
