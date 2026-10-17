@@ -85,7 +85,7 @@ async def search_channel(
     async for message in client.iter_messages(entity, search=query, limit=limit):
         item = serialize_message(message, entity)
         archive.upsert(item)
-        results.append(item)
+        results.append(archive.get_message(item["channel_id"], item["message_id"]))
     return results
 
 
@@ -95,6 +95,8 @@ async def download_message(
     channel_ref: str,
     message_id: int,
     destination: Path,
+    *,
+    persist: bool = True,
 ) -> Path | None:
     entity = await client.get_entity(channel_reference(channel_ref))
     messages = await client.get_messages(entity, ids=message_id)
@@ -105,7 +107,8 @@ async def download_message(
     if not path:
         return None
     item = serialize_message(messages, entity)
-    item["file_path"] = path
+    if persist:
+        item["file_path"] = path
     archive.upsert(item)
     return Path(path)
 
@@ -139,6 +142,10 @@ async def search_channels(
             :limit
         ],
         "errors": [error for _, error in outcomes if error],
+        "scope": "saved",
+        "query": query,
+        "limit": limit,
+        "truncated": len(messages) >= limit,
     }
 
 
@@ -187,7 +194,14 @@ async def search_account(client, archive: Archive, query: str, limit: int = 100)
         item = serialize_message(message, entity)
         archive.upsert(item)
         results.append(item)
-    return {"results": results, "errors": []}
+    return {
+        "results": results,
+        "errors": [],
+        "scope": "account",
+        "query": query,
+        "limit": limit,
+        "truncated": len(results) >= limit,
+    }
 
 
 async def search_public_posts(client, archive: Archive, query: str, limit: int = 50):
@@ -226,6 +240,9 @@ async def search_public_posts(client, archive: Archive, query: str, limit: int =
     return {
         "results": results,
         "errors": [],
-        "scope": "public-posts",
+        "scope": "public",
+        "query": query,
+        "limit": limit,
+        "truncated": len(results) >= limit,
         "note": "One Telegram result page; free quota only. Premium may be required.",
     }

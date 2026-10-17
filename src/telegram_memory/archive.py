@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import sqlite3
 from datetime import datetime
 from pathlib import Path
@@ -148,20 +149,55 @@ class Archive:
         if downloaded:
             filters.append("m.file_path IS NOT NULL")
         terms = query.strip()
+        parts = re.findall(r'"([^"\n]+)"|(\w+)', terms)
         join = ""
         if terms and self.fts_enabled:
             join = "JOIN message_fts ON message_fts.rowid=m.rowid"
             filters.append("message_fts MATCH ?")
-            parameters.append('"' + terms.replace('"', '""') + '"')
+            # Bare words may occur separately, and prefix matches find partial filenames.
+            # Explicitly quoted groups keep their phrase semantics.
+            expression = " AND ".join(
+                '"' + (phrase or word).replace('"', '""') + '"' + ("" if phrase else "*")
+                for phrase, word in parts
+            )
+            parameters.append(expression or '"' + terms.replace('"', '""') + '"')
         elif terms:
-            filters.append("(lower(m.text) LIKE ? OR lower(COALESCE(m.file_name,'')) LIKE ?)")
-            parameters.extend([f"%{terms.lower()}%"] * 2)
+            for phrase, word in parts or [(terms, "")]:
+                filters.append(
+                    "(lower(m.text) LIKE ? ESCAPE '\\' OR lower(COALESCE(m.file_name,'')) LIKE ? ESCAPE '\\')"
+                )
+                literal = (
+                    (phrase or word)
+                    .lower()
+                    .replace("\\", "\\\\")
+                    .replace("%", "\\%")
+                    .replace("_", "\\_")
+                )
+                parameters.extend([f"%{literal}%"] * 2)
         rows = self.connection.execute(
             f"SELECT m.* FROM messages m {join} WHERE {' AND '.join(filters)} "
             "ORDER BY m.sent_at DESC, m.channel_id, m.message_id DESC LIMIT ? OFFSET ?",
             [*parameters, max(1, min(limit, 1001)), max(0, offset)],
         ).fetchall()
         return [dict(row) for row in rows]
+
+    def search_metadata(self) -> dict[str, Any]:
+        return {
+            "mime_types": [
+                row[0]
+                for row in self.connection.execute(
+                    "SELECT DISTINCT lower(mime_type) FROM messages WHERE mime_type IS NOT NULL "
+                    "AND mime_type != '' ORDER BY lower(mime_type)"
+                )
+            ],
+            "channels": [
+                dict(row)
+                for row in self.connection.execute(
+                    "SELECT channel_id, MAX(channel_name) AS channel_name FROM messages "
+                    "GROUP BY channel_id ORDER BY lower(channel_name)"
+                )
+            ],
+        }
 
     def stats(self) -> dict[str, int]:
         row = self.connection.execute(

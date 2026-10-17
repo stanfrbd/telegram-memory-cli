@@ -310,3 +310,68 @@ def test_new_cli_commands():
     assert parser.parse_args(["upload", "file.txt", "--channel", "me"]).channel == "me"
     args = parser.parse_args(["find", "report", "--media", "image", "--mime-type", "image/*"])
     assert args.media == "image"
+
+
+@pytest.mark.asyncio
+async def test_browser_download_is_temporary_and_not_indexed_as_permanent(config):
+    import httpx
+
+    class Client(FakeClient):
+        async def get_messages(self, entity, ids):
+            return SimpleNamespace(
+                id=ids,
+                date=None,
+                raw_text="fixture",
+                media=True,
+                file=SimpleNamespace(name="report.pdf", mime_type="application/pdf", size=8),
+            )
+
+        async def download_media(self, message, file):
+            from pathlib import Path
+
+            target = Path(file) / "report.pdf"
+            target.write_bytes(b"fixture")
+            return str(target)
+
+    app = create_app(config, client_factory=lambda _: Client())
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://testserver"
+        ) as client:
+            response = await client.post(
+                "/api/downloads",
+                json={"channel": "@security", "message_id": 7, "destination": "browser"},
+            )
+            outcome = await wait_job(client, response.json()["job_id"])
+            assert outcome["status"] == "completed"
+            url = outcome["result"]["download_url"]
+            assert (await client.get(url)).content == b"fixture"
+            assert (await client.get(url)).status_code == 404
+            assert not config.download_dir.exists()
+            with Archive(config.database_path) as archive:
+                assert archive.get_message("123", 7)["file_path"] is None
+
+
+def test_search_metadata_lists_indexed_mime_types(config):
+    with Archive(config.database_path) as archive:
+        archive.upsert(message(mime="application/x-threat-log"))
+    with TestClient(create_app(config)) as client:
+        data = client.get("/api/search/metadata").json()
+        assert "application/x-threat-log" in data["mime_types"]
+        assert data["channels"][0]["channel_name"] == "security"
+
+
+def test_expired_browser_downloads_are_removed(tmp_path, monkeypatch):
+    import tempfile
+    from pathlib import Path
+
+    from telegram_memory.downloads import BrowserDownloads
+
+    directory = tempfile.TemporaryDirectory(dir=tmp_path)
+    path = Path(directory.name) / "file"
+    path.write_bytes(b"data")
+    downloads = BrowserDownloads(ttl=10)
+    downloads.add("job", directory, path)
+    monkeypatch.setattr("telegram_memory.downloads.time.monotonic", lambda: 10**15)
+    assert downloads.get("job") is None
+    assert not path.exists()

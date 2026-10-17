@@ -149,7 +149,21 @@ not delete archive data or unsubscribe on Telegram. Search covers text/captions 
 not OCR, extracted document contents, or semantic similarity. Use a blank query in the web UI
 to browse by filters. A MIME filter is exact unless it contains `*` (e.g. `image/*`). Media
 categories derive from MIME; “Documents” excludes image, audio, and video MIME types.
-Remote results can be opened directly from their job in Transfers, then filtered in the archive.
+Choose the source above the search bar: **Local index**, **Telegram · saved channels**,
+**Telegram · my conversations**, or **Telegram · public posts**. There is one Search button,
+whose label reflects the selected source. Queued/running/error states appear below it; Telegram
+results appear there automatically when the specific search job finishes. Changing source
+prevents an older search from replacing the newly selected view.
+
+Advanced filters are collapsed by default. MIME types are selected from a dropdown combining
+common formats and types actually present in the archive. Filters on Telegram results apply to
+that returned batch only; they do not request more history. The UI shows returned and matching
+counts, result limits, and per-source failures. A filter hiding all results is distinguished from
+an API failure. Reset filters clears the selection. Transfers retains the original task details.
+
+Local search now matches separate query words in any order, with FTS prefix matching for partial
+words/filenames. Use double quotes for an exact phrase: `"incident response"`. This also applies
+to `tgmem find`. SQLite builds without FTS use literal substring conditions for each word/phrase.
 
 ### Search scopes and Telegram limits
 
@@ -208,7 +222,9 @@ Swagger's documentation assets). Core endpoints:
 | POST | `/api/discover` | Public source discovery |
 | POST | `/api/sync` | Index saved sources; optional `channel`, `limit` |
 | POST | `/api/favorites` | Set `favorite` for `channel`, `message_id` |
-| POST | `/api/downloads` | Queue `channel`, `message_id` download |
+| POST | `/api/downloads` | Queue `channel`, `message_id`, optional `destination` (`server` or `browser`) |
+| GET | `/api/downloads/browser/{job_id}` | Retrieve a temporary browser download once |
+| GET | `/api/search/metadata` | Available indexed MIME types and sources |
 | GET | `/api/downloads/file` | Retrieve downloaded attachment by channel/message ID |
 | POST | `/api/uploads` | Multipart `file`, `channel`, optional `caption`, `document` |
 | GET | `/api/jobs` | Latest 100 jobs |
@@ -287,7 +303,8 @@ HTML/CSS/JavaScript shipped inside the wheel, with no build step or CDN dependen
 | `web_models.py` | Validated request contracts |
 | `jobs.py` / `database.py` | Durable background-job history and short SQLite transactions |
 | `research.py` | Research router, rule storage, keyword scheduler |
-| `static/` | Responsive web interface (rendered with textContent for untrusted messages) |
+| `downloads.py` | Temporary browser-download lifecycle |
+| `static/` | Responsive UI; `search.js` owns source selection, filters, and search state |
 
 To add an integration, implement its Telegram operation in `telegram.py`, create an API router
 following `register_research`, and submit remote work through the shared `enqueue` function
@@ -331,3 +348,29 @@ source management/discovery, all three remote search scopes, file uploads, monit
 restart recovery, token entry on mobile, horizontal overflow, JavaScript errors, unexpected HTTP
 failures, and inert rendering of message markup. Fake Telegram responses do not validate real
 account permissions, flood limits, or Premium/free-search availability.
+
+
+### Browser downloads versus server storage
+
+Each attachment offers two explicit actions:
+
+- **Download to device** retrieves the file in your browser, including when it has never been
+  downloaded before. Telegram transfers through the server into a private temporary directory;
+  it does not save a new copy in the configured permanent download directory. The temporary
+  file is deleted after retrieval, expires after 30 minutes if abandoned, and is removed on
+  orderly server shutdown. A previously saved permanent copy can be reused without contacting
+  Telegram again. Browser delivery currently buffers the response as a browser Blob.
+- **Save on server** saves the file in the configured download directory on the machine running
+  `tgmem serve`, with a visible queued/running/saved state. It does not trigger a browser download.
+
+API clients can POST `{"channel":"@source","message_id":123,"destination":"browser"}` to
+`/api/downloads`, poll the returned job ID, then GET its result's `download_url` with the same
+Bearer authentication. The URL is single-use and valid only in that server process. Repeat the
+POST if it has expired or the server restarted. Browser-only transfers do not set the archive's
+permanent `file_path` or count as saved-on-server files. The omitted destination defaults to
+`server`, preserving existing API behavior; the CLI download command still saves on the server.
+
+The UI bounds each Telegram query to 100 returned messages. Reaching that limit is displayed;
+this version does not automatically page through all Telegram history or spend Telegram Stars.
+Narrow the query/source or sync more history and search the local index. Local indexing and
+message filtering cannot override Telegram account access, server indexing, quota, or API limits.

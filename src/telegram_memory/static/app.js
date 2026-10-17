@@ -1,11 +1,8 @@
 "use strict";
 const $ = (id) => document.getElementById(id);
+import { createSearchController } from "/search.js";
 let token = "",
-  offset = 0,
-  hasMore = false,
-  activeJobs = false,
-  showingRemote = false;
-const pageSize = 50;
+  activeJobs = false;
 function el(tag, text, className) {
   const node = document.createElement(tag);
   if (text != null) node.textContent = text;
@@ -73,7 +70,7 @@ async function stats() {
       ["Messages indexed", data.stats.messages],
       ["Saved channels", data.saved_channels],
       ["Attachments", data.stats.files],
-      ["Downloaded", data.stats.downloads],
+      ["Saved on server", data.stats.downloads],
     ].map(([label, count]) => {
       const card = el("div", null, "stat");
       card.append(el("span", label), el("strong", count.toLocaleString()));
@@ -124,46 +121,44 @@ $("channel-form").onsubmit = guard(async (event) => {
   await channels();
   await stats();
 });
-function params() {
-  const values = new URLSearchParams({
-    q: $("query").value,
-    limit: pageSize,
-    offset,
-  });
-  for (const [key, id] of [
-    ["channel", "channel"],
-    ["media", "media"],
-    ["mime_type", "mime"],
-    ["after", "after"],
-    ["before", "before"],
-    ["min_size", "min-size"],
-    ["max_size", "max-size"],
-  ])
-    if ($(id).value) values.set(key, $(id).value);
-  if ($("favorites").checked) values.set("favorite", "true");
-  if ($("downloaded").checked) values.set("downloaded", "true");
-  return values;
-}
 function bytes(value) {
   if (value == null) return "";
   return value >= 1048576
     ? (value / 1048576).toFixed(1) + " MB"
     : (value / 1024).toFixed(1) + " KB";
 }
-async function saveFile(item) {
+async function waitJob(jobId, update = () => {}) {
+  while (true) {
+    const job = await json("/api/jobs/" + jobId);
+    update(job);
+    if (job.status === "completed") return job;
+    if (!["queued", "running"].includes(job.status))
+      throw Error(job.error || `Task ${job.status}.`);
+    await new Promise((resolve) => setTimeout(resolve, 750));
+  }
+}
+async function saveFile(item, downloadUrl = null) {
   const response = await api(
-    "/api/downloads/file?" +
-      new URLSearchParams({
-        channel: item.channel_id,
-        message_id: item.message_id,
-      }),
+    downloadUrl ||
+      "/api/downloads/file?" +
+        new URLSearchParams({
+          channel: item.channel_id,
+          message_id: item.message_id,
+        }),
   );
   const url = URL.createObjectURL(await response.blob());
-  const a = el("a");
-  a.href = url;
-  a.download = item.file_name || "download";
-  a.click();
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  const link = el("a");
+  link.href = url;
+  link.download = item.file_name || "download";
+  document.body.append(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
+}
+function telegramReference(item) {
+  return /^\d+$/.test(item.channel_id)
+    ? `-100${item.channel_id}`
+    : item.channel_id;
 }
 function messageCard(item) {
   const card = el("article", null, "card"),
@@ -195,7 +190,8 @@ function messageCard(item) {
       });
       item.favorite = result.favorite;
       favorite.textContent = item.favorite ? "★ Favorited" : "☆ Favorite";
-      if (card.parentElement === $("results") && !showingRemote) await search();
+      if (card.parentElement === $("results") && !searchController.isRemote)
+        await searchController.refresh();
     } finally {
       favorite.disabled = false;
     }
@@ -209,58 +205,70 @@ function messageCard(item) {
     actions.append(link);
   }
   if (item.file_name) {
-    const download = el(
+    const device = el("button", "Download to device");
+    const server = el(
       "button",
-      item.file_path ? "Save to device ↓" : "Download ↓",
+      item.file_path ? "Saved on server" : "Save on server",
     );
-    download.onclick = guard(async () => {
-      if (item.file_path) await saveFile(item);
-      else
-        queued(
-          await post("/api/downloads", {
-            channel: /^\d+$/.test(item.channel_id)
-              ? `-100${item.channel_id}`
-              : item.channel_id,
+    server.disabled = Boolean(item.file_path);
+    device.onclick = guard(async () => {
+      device.disabled = true;
+      try {
+        if (item.file_path) await saveFile(item);
+        else {
+          device.textContent = "Preparing download…";
+          const job = await post("/api/downloads", {
+            channel: telegramReference(item),
             message_id: item.message_id,
-          }),
-        );
+            destination: "browser",
+          });
+          const outcome = await waitJob(job.job_id, (state) => {
+            device.textContent =
+              state.status === "queued" ? "Queued…" : "Downloading…";
+          });
+          device.textContent = "Sending to browser…";
+          await saveFile(item, outcome.result.download_url);
+        }
+        notice("Download sent to your browser.");
+      } finally {
+        device.disabled = false;
+        device.textContent = "Download to device";
+      }
     });
-    actions.append(download);
+    server.onclick = guard(async () => {
+      server.disabled = true;
+      try {
+        const job = await post("/api/downloads", {
+          channel: telegramReference(item),
+          message_id: item.message_id,
+          destination: "server",
+        });
+        server.textContent = "Saving on server…";
+        const outcome = await waitJob(job.job_id);
+        item.file_path = outcome.result.path;
+        server.textContent = "Saved on server";
+        notice("File saved in the server's configured download directory.");
+        await stats();
+      } finally {
+        if (!item.file_path) {
+          server.disabled = false;
+          server.textContent = "Save on server";
+        }
+      }
+    });
+    actions.append(device, server);
   }
   card.append(actions);
   return card;
 }
-async function search() {
-  showingRemote = false;
-  const data = await json("/api/search?" + params());
-  hasMore = data.has_more;
-  $("results").replaceChildren(...data.results.map(messageCard));
-  if (!data.results.length)
-    $("results").append(
-      el(
-        "div",
-        "Nothing here yet. Add channels and sync them, or adjust your search.",
-        "empty",
-      ),
-    );
-  $("result-title").textContent =
-    `${$("query").value ? "Search results" : "Recent messages"} · ${data.results.length}${hasMore ? "+" : ""}`;
-  $("previous").disabled = offset === 0;
-  $("next").disabled = !hasMore;
-  $("page").textContent = `Page ${Math.floor(offset / pageSize) + 1}`;
-}
-$("search-form").onsubmit = guard(async (event) => {
-  event.preventDefault();
-  offset = 0;
-  await search();
-});
-$("previous").onclick = guard(async () => {
-  offset = Math.max(0, offset - pageSize);
-  await search();
-});
-$("next").onclick = guard(async () => {
-  offset += pageSize;
-  await search();
+const searchController = createSearchController({
+  json,
+  post,
+  el,
+  messageCard,
+  stats,
+  waitJob,
+  notice,
 });
 function queued(job) {
   notice(
@@ -269,25 +277,32 @@ function queued(job) {
   activeJobs = true;
   guard(jobs)();
 }
-$("sync-all").onclick = guard(async () =>
-  queued(await post("/api/sync", { channel: $("channel").value || null })),
-);
-$("remote").onclick = guard(async () => {
-  if (!$("query").value.trim()) throw Error("Enter a search query first.");
-  queued(
-    await post(
-      {
-        account: "/api/search/account",
-        public: "/api/search/public",
-        saved: "/api/search/remote",
-      }[$("remote-scope").value],
-      {
-        query: $("query").value,
-        channel: $("channel").value || null,
-        limit: 100,
-      },
-    ),
-  );
+$("sync-all").onclick = guard(async () => {
+  const button = $("sync-all");
+  button.disabled = true;
+  try {
+    const job = await post("/api/sync", {});
+    const outcome = await waitJob(job.job_id, (state) => {
+      button.textContent =
+        state.status === "queued"
+          ? "Index sync queued…"
+          : "Indexing Telegram messages…";
+    });
+    const count = (outcome.result.results || []).reduce(
+      (sum, item) => sum + item.indexed_messages,
+      0,
+    );
+    const errors = outcome.result.errors || [];
+    notice(
+      `Local index refreshed: ${count} messages read from Telegram. ${errors.length ? `${errors.length} source(s) failed; see Transfers.` : ""}`,
+      Boolean(errors.length),
+    );
+    await stats();
+    await searchController.refresh();
+  } finally {
+    button.disabled = false;
+    button.textContent = "↻ Sync saved channels";
+  }
 });
 $("upload-form").onsubmit = guard(async (event) => {
   event.preventDefault();
@@ -319,9 +334,20 @@ async function jobs() {
       );
       if (job.error) card.append(el("p", job.error));
       if (job.result) {
-        card.append(
+        const details = el("details");
+        details.append(
+          el("summary", "Task details"),
           el("pre", JSON.stringify(job.result, null, 2), "job-result"),
         );
+        card.append(details);
+        if (job.result.errors?.length)
+          card.append(
+            el(
+              "p",
+              `${job.result.errors.length} source(s) failed. Open task details.`,
+              "hint",
+            ),
+          );
         if (job.result.channels) {
           const show = el("button", "Show discovered channels");
           show.onclick = () => {
@@ -336,14 +362,7 @@ async function jobs() {
         ) {
           const show = el("button", "Show returned messages");
           show.onclick = () => {
-            $("results").replaceChildren(
-              ...job.result.results.map(messageCard),
-            );
-            showingRemote = true;
-            $("result-title").textContent = "Telegram results";
-            $("previous").disabled = true;
-            $("next").disabled = true;
-            $("page").textContent = "Telegram results";
+            searchController.showRemote(job.result);
             view("search");
           };
           card.append(show);
@@ -358,17 +377,15 @@ async function jobs() {
     );
   if (wasActive && !activeJobs) {
     await stats();
-    if (!showingRemote) await search();
+    if (!searchController.busy) await searchController.refresh();
     await rules();
-    notice(
-      "Jobs finished. Check Transfers for results and any channel errors.",
-    );
+    notice("Background tasks finished. Activity is available in Transfers.");
   }
 }
 async function refresh() {
   await channels();
   await stats();
-  await search();
+  await searchController.refresh();
   await jobs();
   await rules();
 }

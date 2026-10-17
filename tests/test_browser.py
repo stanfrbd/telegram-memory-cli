@@ -74,11 +74,22 @@ def nav(page, name):
     page.locator(f'nav button[data-view="{name}"]').click()
 
 
+def wait_api(page, path, predicate):
+    deadline = time.monotonic() + 15
+    while time.monotonic() < deadline:
+        data = page.request.get(page.url.rstrip("/") + path).json()
+        if predicate(data):
+            return data
+        time.sleep(0.05)
+    pytest.fail(f"API state did not become ready: {path}")
+
+
 def wait_for_jobs(page):
-    page.wait_for_function(
-        "async () => (await (await fetch('/api/jobs')).json()).every(j => !['queued','running'].includes(j.status))"
+    wait_api(
+        page,
+        "/api/jobs",
+        lambda rows: all(row["status"] not in {"queued", "running"} for row in rows),
     )
-    # Wait for the UI's own polling to reflect completed jobs.
     playwright.expect(page.locator("#jobs")).to_contain_text("completed", timeout=15000)
 
 
@@ -111,34 +122,34 @@ def test_desktop_end_to_end(browser, tmp_path):
         playwright.expect(page.locator("#results .card")).to_have_count(13)
         page.locator("#previous").click()
         page.locator("#media").select_option("image")
-        page.locator("#search-form button").click()
+        page.locator("#search-submit").click()
         playwright.expect(page.locator("#results .card")).to_have_count(1)
         playwright.expect(page.locator("#results")).to_contain_text("diagram.png")
         page.locator("#results button").filter(has_text="Favorite").click()
         page.locator("#media").select_option("")
-        page.locator("summary").click()
+        page.locator("#advanced-filters summary").click()
         page.locator("#favorites").check()
-        page.locator("#search-form button").click()
+        page.locator("#search-submit").click()
         playwright.expect(page.locator("#results .card")).to_have_count(1)
         page.locator("#favorites").uncheck()
-        page.locator("#mime").fill("application/pdf")
+        page.locator("#mime").select_option("application/pdf")
         page.locator("#query").fill("report")
-        page.locator("#search-form button").click()
+        page.locator("#search-submit").click()
         playwright.expect(page.locator("#results .card")).to_have_count(50)
         # A download traverses the real API, queue, archive and browser file endpoint.
         page.locator("#results .card").first.get_by_role(
-            "button", name="Download ↓", exact=True
+            "button", name="Save on server", exact=True
         ).click()
         nav(page, "transfers")
         wait_for_jobs(page)
         nav(page, "search")
         page.locator("#query").fill("")
-        page.locator("#mime").fill("")
+        page.locator("#mime").select_option("")
         page.locator("#downloaded").check()
-        page.locator("#search-form button").click()
+        page.locator("#search-submit").click()
         playwright.expect(page.locator("#results .card")).to_have_count(1)
         with page.expect_download() as download:
-            page.get_by_role("button", name="Save to device ↓", exact=True).click()
+            page.get_by_role("button", name="Download to device", exact=True).click()
         assert Path(download.value.path()).read_bytes() == b"%PDF-test fixture"
         page.locator("#downloaded").uncheck()
         nav(page, "channels")
@@ -162,11 +173,14 @@ def test_desktop_end_to_end(browser, tmp_path):
         nav(page, "search")
         page.locator("#query").fill("threat")
         for scope in ["saved", "account", "public"]:
-            page.locator("#remote-scope").select_option(scope)
-            page.locator("#remote").click()
-            nav(page, "transfers")
-            wait_for_jobs(page)
-            nav(page, "search")
+            page.locator("#source").select_option(scope)
+            page.locator("#search-submit").click()
+            playwright.expect(page.locator("#search-status")).to_contain_text(
+                "messages returned by Telegram", timeout=15000
+            )
+            assert page.locator("#results .card").count() > 0
+        page.locator("#source").select_option("index")
+        playwright.expect(page.locator("#results .card")).to_have_count(50)
         page.locator("#next").click()
         playwright.expect(page.locator("#page")).to_have_text("Page 2")
         nav(page, "transfers")
@@ -176,7 +190,8 @@ def test_desktop_end_to_end(browser, tmp_path):
         page.get_by_role("button", name="Show returned messages", exact=True).first.click()
         playwright.expect(page.locator("#previous")).to_be_disabled()
         playwright.expect(page.locator("#next")).to_be_disabled()
-        playwright.expect(page.locator("#page")).to_have_text("Telegram results")
+        playwright.expect(page.locator("#page")).to_have_text("Page 1")
+        playwright.expect(page.locator("#source")).to_have_value("public")
         nav(page, "upload")
         page.locator("#upload-form [name=channel]").fill("me")
         page.locator("#upload-form [name=caption]").fill("Browser upload test")
@@ -195,12 +210,8 @@ def test_desktop_end_to_end(browser, tmp_path):
         page.locator("#rules").get_by_role("button", name="Pause", exact=True).click()
         playwright.expect(page.locator("#rules")).to_contain_text("Paused")
         page.locator("#rules").get_by_role("button", name="Run now", exact=True).click()
-        page.wait_for_function(
-            "async () => (await (await fetch('/api/rules')).json()).length === 1"
-        )
-        page.wait_for_function(
-            "async () => {const rules=await (await fetch('/api/rules')).json();return (await (await fetch('/api/rules/'+rules[0].id+'/hits')).json()).length>0}"
-        )
+        rule = wait_api(page, "/api/rules", lambda rows: len(rows) == 1)[0]
+        wait_api(page, f"/api/rules/{rule['id']}/hits", lambda rows: bool(rows))
         page.locator("#rules").get_by_role("button", name="View matches", exact=True).click()
         playwright.expect(page.locator("#rule-hits")).to_contain_text("Remote threat")
         hit = page.locator("#rule-hits .card").first
@@ -216,8 +227,9 @@ def test_desktop_end_to_end(browser, tmp_path):
         playwright.expect(page.locator("#rules .card")).to_have_count(0)
         # Untrusted message markup remains inert text, including on later pages.
         nav(page, "search")
+        page.locator("#source").select_option("index")
         page.locator("#query").fill("")
-        page.locator("#search-form button").click()
+        page.locator("#search-submit").click()
         page.locator("#next").click()
         playwright.expect(page.locator("#results")).to_contain_text("<img src=x onerror=alert(1)>")
         assert page.locator("#results img").count() == 0
@@ -260,6 +272,10 @@ def test_mobile_auth_and_layout(browser, tmp_path):
             assert page.evaluate("document.documentElement.scrollWidth <= innerWidth"), (
                 f"Overflow in {section}"
             )
+        page.locator("#advanced-filters summary").click()
+        assert page.evaluate("document.documentElement.scrollWidth <= innerWidth"), (
+            "Advanced filters overflow on mobile"
+        )
         page.get_by_role("button", name="Switch to light mode", exact=True).click()
         playwright.expect(page.locator("html")).to_have_attribute("data-theme", "light")
         page.reload()
@@ -282,10 +298,79 @@ def test_monitoring_resumes_after_server_restart(browser, tmp_path):
         page.goto(base)
         nav(page, "monitor")
         playwright.expect(page.locator("#rules")).to_contain_text("threat")
-        page.wait_for_function("""async () => {
-            const rules = await (await fetch('/api/rules')).json();
-            return (await (await fetch('/api/rules/' + rules[0].id + '/hits')).json()).length > 0;
-        }""")
+        rule = wait_api(page, "/api/rules", lambda rows: len(rows) == 1)[0]
+        wait_api(page, f"/api/rules/{rule['id']}/hits", lambda rows: bool(rows))
         page.locator("#rules").get_by_role("button", name="View matches", exact=True).click()
         playwright.expect(page.locator("#rule-hits")).to_contain_text("Remote threat")
+        page.close()
+
+
+def test_search_sources_status_errors_and_browser_only_download(browser, tmp_path):
+    with start_server(tmp_path) as base:
+        page = browser.new_page(viewport={"width": 1400, "height": 1000})
+        errors = []
+        page.on("pageerror", lambda error: errors.append(str(error)))
+        page.goto(base)
+        playwright.expect(page.locator("#results .card")).to_have_count(50)
+        playwright.expect(page.locator("#search-status")).to_contain_text("index only")
+        assert not page.locator("#advanced-filters").evaluate("node => node.open")
+        # Browser download works for a message that has never been saved on the server.
+        with page.expect_download() as downloaded:
+            page.locator("#results .card").first.get_by_role(
+                "button", name="Download to device", exact=True
+            ).click()
+        assert Path(downloaded.value.path()).read_bytes() == b"%PDF-test fixture"
+        assert not list((tmp_path / "downloads").rglob("*"))
+        data = page.request.get(base + "/api/search?downloaded=true").json()
+        assert data["results"] == []
+        assert "application/pdf" in page.locator("#mime option").evaluate_all(
+            "nodes=>nodes.map(node=>node.value)"
+        )
+        page.locator("#source").select_option("account")
+        page.locator("#query").fill("AI")  # Short queries are valid outside directory discovery.
+        page.locator("#search-submit").click()
+        playwright.expect(page.locator("#search-status")).to_have_class("search-status busy")
+        playwright.expect(page.locator("#search-status")).to_contain_text(
+            "messages returned by Telegram", timeout=15000
+        )
+        playwright.expect(page.locator("#results")).to_contain_text("Remote threat")
+        assert not page.locator("#channel").is_enabled()
+        page.locator("#advanced-filters summary").click()
+        page.locator("#mime").select_option("image/png")
+        playwright.expect(page.locator("#search-status")).to_contain_text("0 match your filters")
+        playwright.expect(page.locator("#results .card")).to_have_count(0)
+        page.locator("#reset-filters").click()
+        playwright.expect(page.locator("#results .card")).to_have_count(1)
+        page.locator("#source").select_option("public")
+        page.locator("#query").fill("fail-public")
+        page.locator("#search-submit").click()
+        playwright.expect(page.locator("#search-status")).to_contain_text(
+            "Public search denied for test", timeout=15000
+        )
+        playwright.expect(page.locator("#results")).to_contain_text("No results were substituted")
+        page.request.post(base + "/api/channels", data={"channel": "@unavailable"})
+        page.locator("#source").select_option("saved")
+        page.locator("#query").fill("threat")
+        page.locator("#search-submit").click()
+        playwright.expect(page.locator("#search-status")).to_contain_text(
+            "source(s) failed", timeout=15000
+        )
+        playwright.expect(page.locator("#search-errors")).to_contain_text("@unavailable")
+        assert page.locator("#results .card").count() > 0
+        # Switching source while a remote job is pending must not replace local results later.
+        page.locator("#source").select_option("account")
+        page.locator("#query").fill("threat")
+        page.locator("#search-submit").click()
+        page.locator("#source").select_option("index")
+        wait_api(
+            page,
+            "/api/jobs",
+            lambda rows: all(row["status"] not in {"queued", "running"} for row in rows),
+        )
+        playwright.expect(page.locator("#search-status")).to_contain_text("index only")
+        playwright.expect(page.locator("#source")).to_have_value("index")
+        page.locator("#sync-all").click()
+        expect_notice(page, "Local index refreshed")
+        playwright.expect(page.locator("#source")).to_have_value("index")
+        assert not errors, errors
         page.close()

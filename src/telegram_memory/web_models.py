@@ -1,5 +1,7 @@
 """Validated request contracts for the web API."""
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 
@@ -23,3 +25,7 @@ class RemoteSearch(SyncInput):
 
 class FavoriteInput(MessageInput):
     favorite: bool
+
+
+class DownloadInput(MessageInput):
+    destination: Literal["server", "browser"] = "server"

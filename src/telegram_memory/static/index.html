@@ -6,7 +6,7 @@
     <title>Telegram Memory</title>
     <script src="/theme.js"></script>
     <link rel="stylesheet" href="/style.css" />
-    <script src="/app.js" defer></script>
+    <script src="/app.js" type="module"></script>
   </head>
   <body>
     <aside>
@@ -56,24 +56,37 @@
               Messages, files, and ideas — across all your channels.
             </p>
           </div>
-          <button id="sync-all">↻ Sync channels</button>
+          <button id="sync-all">↻ Sync saved channels</button>
         </div>
         <div id="stats" class="stats"></div>
         <form id="search-form">
+          <div class="search-source">
+            <label
+              >Search in<select id="source">
+                <option value="index">Local index · offline</option>
+                <option value="saved">Telegram · saved channels</option>
+                <option value="account">Telegram · my conversations</option>
+                <option value="public">Telegram · public posts</option>
+              </select></label
+            >
+            <p id="source-help" class="hint"></p>
+          </div>
           <div class="searchbox">
-            <span>⌕</span
-            ><input
+            <span aria-hidden="true">⌕</span>
+            <input
               id="query"
               placeholder="Search messages, captions, or filenames…"
               aria-label="Search query"
-            /><button class="primary">Search</button>
+            />
+            <button id="search-submit" class="primary">Search index</button>
           </div>
           <div class="filters">
             <label
               >Channel<select id="channel">
-                <option value="">All indexed channels</option>
+                <option value="">All sources</option>
               </select></label
-            ><label
+            >
+            <label
               >Media<select id="media">
                 <option value="">All media</option>
                 <option value="image">Images</option>
@@ -82,50 +95,48 @@
                 <option value="document">Documents</option>
                 <option value="text">Text only</option>
               </select></label
-            ><label
-              >MIME type<input
-                id="mime"
-                placeholder="e.g. application/pdf" /></label
-            ><label>From<input id="after" type="date" /></label
-            ><label>Until<input id="before" type="date" /></label>
+            >
           </div>
-          <details>
-            <summary>More filters</summary>
+          <details id="advanced-filters">
+            <summary>Advanced filters</summary>
+            <p id="filter-help" class="hint"></p>
             <div class="filters">
               <label
-                >Minimum bytes<input
-                  id="min-size"
-                  type="number"
-                  min="0" /></label
-              ><label
-                >Maximum bytes<input
-                  id="max-size"
-                  type="number"
-                  min="0" /></label
-              ><label class="check"
+                >MIME type<select id="mime">
+                  <option value="">Any MIME type</option>
+                </select></label
+              >
+              <label>From<input id="after" type="date" /></label>
+              <label>Until<input id="before" type="date" /></label>
+            </div>
+            <div class="filters">
+              <label
+                >Minimum bytes<input id="min-size" type="number" min="0"
+              /></label>
+              <label
+                >Maximum bytes<input id="max-size" type="number" min="0"
+              /></label>
+              <label class="check"
                 ><input id="favorites" type="checkbox" />Favorites only</label
-              ><label class="check"
-                ><input id="downloaded" type="checkbox" />Downloaded only</label
+              >
+              <label class="check"
+                ><input id="downloaded" type="checkbox" />Saved on server
+                only</label
               >
             </div>
+            <button id="reset-filters" type="button">Reset filters</button>
           </details>
         </form>
         <div class="results-heading">
-          <h2 id="result-title">Recent messages</h2>
-          <div>
-            <select id="remote-scope" aria-label="Telegram search scope">
-              <option value="saved">Saved channels</option>
-              <option value="account">Account conversations</option>
-              <option value="public">Public posts (free quota)</option>
-            </select>
-            <button id="remote">Search on Telegram ↗</button>
-          </div>
+          <h2 id="result-title">Local index</h2>
         </div>
-        <p class="hint">
-          Archive search works offline. Telegram search indexes returned
-          messages; apply media filters here afterwards. Public-post search uses
-          free quota only and may require Premium.
-        </p>
+        <p
+          id="search-status"
+          class="search-status"
+          role="status"
+          aria-live="polite"
+        ></p>
+        <div id="search-errors"></div>
         <div id="results"></div>
         <div class="pagination">
           <button id="previous">← Previous</button><span id="page"></span

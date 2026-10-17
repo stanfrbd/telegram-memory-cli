@@ -69,3 +69,14 @@ def test_invalid_date_filter_is_reported(tmp_path):
     with Archive(tmp_path / "archive.sqlite3") as archive:
         with pytest.raises(ValueError, match="Invalid date"):
             archive.list_files(after="not-a-date")
+
+
+@pytest.mark.parametrize("fts", [True, False])
+def test_search_separate_words_and_quoted_phrases(tmp_path, fts):
+    with Archive(tmp_path / "index.db") as archive:
+        archive.upsert(sample(text="Incident triage and response checklist", file_name="guide.pdf"))
+        archive.fts_enabled = fts and archive.fts_enabled
+        assert len(archive.search("incident response")) == 1
+        assert archive.search('"incident response"') == []
+        assert len(archive.search('"response checklist"')) == 1
+        assert len(archive.search("check")) == 1

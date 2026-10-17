@@ -1,5 +1,6 @@
 """Disposable real FastAPI server with a deterministic Telegram test double."""
 
+import asyncio
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -54,9 +55,12 @@ class FakeTelegram:
         return True
 
     async def get_entity(self, reference):
+        if reference == "@unavailable":
+            raise ValueError("Channel inaccessible in test")
         return entity(reference)
 
     async def iter_messages(self, target, **kwargs):
+        await asyncio.sleep(0.2)
         yield message(900, "Remote threat research result")
 
     async def get_messages(self, target, ids):
@@ -87,6 +91,8 @@ class FakeTelegram:
         if isinstance(request, CheckSearchPostsFloodRequest):
             return SimpleNamespace(query_is_free=True, remains=1)
         if isinstance(request, SearchPostsRequest):
+            if request.query == "fail-public":
+                raise ValueError("Public search denied for test")
             post = types.Message(
                 id=1100,
                 peer_id=types.PeerChannel(777),

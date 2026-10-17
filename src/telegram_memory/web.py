@@ -14,11 +14,13 @@ from urllib.parse import urlsplit
 
 from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
+from starlette.background import BackgroundTask
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from telethon.errors import RPCError
 
 from .archive import Archive
 from .config import Config, read_channels, write_channels
+from .downloads import BrowserDownloads
 from .jobs import Jobs
 from .research import register_research
 from .telegram import (
@@ -30,8 +32,8 @@ from .telegram import (
 )
 from .web_models import (
     ChannelInput,
+    DownloadInput,
     FavoriteInput,
-    MessageInput,
     RemoteSearch,
     SyncInput,
 )
@@ -50,6 +52,7 @@ def create_app(
     with Archive(config.database_path):
         pass
     jobs = Jobs(config.database_path)
+    browser_downloads = BrowserDownloads()
 
     async def get_client():
         nonlocal client
@@ -88,16 +91,24 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(app):
+        async def expire_downloads():
+            while True:
+                browser_downloads.expire()
+                await asyncio.sleep(30)
+
+        expiry = asyncio.create_task(expire_downloads())
         scheduler = asyncio.create_task(research_scheduler())
         try:
             yield
         finally:
             scheduler.cancel()
-            await asyncio.gather(scheduler, return_exceptions=True)
+            expiry.cancel()
+            await asyncio.gather(scheduler, expiry, return_exceptions=True)
             pending = list(tasks.values())
             for task in pending:
                 task.cancel()
             await asyncio.gather(*pending, return_exceptions=True)
+            browser_downloads.close()
             if client:
                 await client.disconnect()
 
@@ -142,6 +153,10 @@ def create_app(
     @app.get("/app.js", include_in_schema=False)
     async def javascript():
         return FileResponse(static / "app.js", media_type="text/javascript")
+
+    @app.get("/search.js", include_in_schema=False)
+    async def search_script():
+        return FileResponse(static / "search.js", media_type="text/javascript")
 
     @app.get("/theme.js", include_in_schema=False)
     async def theme_script():
@@ -213,6 +228,11 @@ def create_app(
             )
         return {"results": rows[:limit], "offset": offset, "has_more": len(rows) > limit}
 
+    @app.get("/api/search/metadata")
+    async def search_metadata():
+        with Archive(config.database_path) as archive:
+            return archive.search_metadata()
+
     @app.post("/api/favorites")
     async def favorite(body: FavoriteInput):
         with Archive(config.database_path) as archive:
@@ -258,18 +278,60 @@ def create_app(
         return enqueue("sync", operation)
 
     @app.post("/api/downloads", status_code=202)
-    async def download(body: MessageInput):
+    async def download(body: DownloadInput):
         async def operation(telegram, archive):
-            # An isolated directory avoids collisions and untrusted Telegram filenames escaping.
-            destination = config.download_dir / uuid.uuid4().hex
-            path = await download_message(
-                telegram, archive, body.channel, body.message_id, destination
-            )
-            if path is None:
-                raise ValueError("Message has no downloadable attachment.")
-            return {"channel": body.channel, "message_id": body.message_id, "path": str(path)}
+            if body.destination == "server":
+                destination = config.download_dir / uuid.uuid4().hex
+                path = await download_message(
+                    telegram, archive, body.channel, body.message_id, destination
+                )
+                if path is None:
+                    raise ValueError("Message has no downloadable attachment.")
+                return {
+                    "channel": body.channel,
+                    "message_id": body.message_id,
+                    "path": str(path),
+                    "destination": "server",
+                }
+            directory = tempfile.TemporaryDirectory(prefix="tgmem-browser-")
+            try:
+                path = await download_message(
+                    telegram,
+                    archive,
+                    body.channel,
+                    body.message_id,
+                    Path(directory.name),
+                    persist=False,
+                )
+                if path is None:
+                    raise ValueError("Message has no downloadable attachment.")
+                browser_downloads.add(job["job_id"], directory, path)
+                return {
+                    "destination": "browser",
+                    "file_name": path.name,
+                    "download_url": f"/api/downloads/browser/{job['job_id']}",
+                    "expires_in": browser_downloads.ttl,
+                }
+            except BaseException:
+                directory.cleanup()
+                raise
 
-        return enqueue("download", operation)
+        job = enqueue("download", operation)
+        return job
+
+    @app.get("/api/downloads/browser/{job_id}")
+    async def browser_file(job_id: str):
+        path = browser_downloads.get(job_id)
+        if path is None:
+            raise HTTPException(
+                404, "Browser download expired or was already retrieved. Retry the download."
+            )
+        return FileResponse(
+            path,
+            filename=path.name,
+            media_type="application/octet-stream",
+            background=BackgroundTask(browser_downloads.remove, job_id),
+        )
 
     @app.get("/api/downloads/file")
     async def downloaded_file(channel: str, message_id: int):
