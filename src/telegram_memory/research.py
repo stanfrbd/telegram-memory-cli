@@ -85,11 +85,21 @@ class ResearchStore:
     def hits(self, rule_id):
         with self.connect() as db:
             rows = db.execute(
-                "SELECT message, found_at FROM monitor_hits WHERE rule_id=? "
-                "ORDER BY found_at DESC, rowid DESC LIMIT 100",
+                "SELECT h.message, h.found_at, COALESCE(m.favorite,0) AS favorite, m.file_path "
+                "FROM monitor_hits h LEFT JOIN messages m "
+                "ON m.channel_id=h.channel_id AND m.message_id=h.message_id WHERE h.rule_id=? "
+                "ORDER BY h.found_at DESC, h.rowid DESC LIMIT 100",
                 (rule_id,),
             ).fetchall()
-        return [{**json.loads(r["message"]), "found_at": r["found_at"]} for r in rows]
+        return [
+            {
+                **json.loads(row["message"]),
+                "found_at": row["found_at"],
+                "favorite": row["favorite"],
+                "file_path": row["file_path"],
+            }
+            for row in rows
+        ]
 
 
 def register_research(app, config, enqueue):

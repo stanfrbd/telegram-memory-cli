@@ -304,3 +304,27 @@ Tests cover archive filtering/pagination, concurrent partial results, auth/origi
 file retrieval boundaries, upload jobs, discovery/account search, free public-search quota,
 rule deduplication, and restart recovery. They use fake Telegram clients and temporary databases;
 real-account smoke tests remain a separate manual check.
+
+
+### Real-browser integration tests
+
+The optional Playwright suite starts a real Uvicorn/FastAPI server with a temporary SQLite
+archive and a deterministic fake Telegram client. Browser requests reach the actual API;
+HTTP endpoints are not mocked in Playwright. No personal session or Telegram network access
+is required, and uploads/downloads use disposable fixtures.
+
+```bash
+python -m pip install -e '.[web,test,browser]'
+python -m playwright install chromium
+TGMEM_BROWSER_TESTS=1 python -m pytest tests/test_browser.py -q
+```
+
+On Linux CI, use `python -m playwright install --with-deps chromium` to install browser system
+dependencies too. To use an existing Chromium binary, set `TGMEM_BROWSER_EXECUTABLE=/path/to/chromium`
+instead of `TGMEM_BROWSER_TESTS`. Without either opt-in, normal test runs skip browser tests.
+
+Coverage includes desktop pagination and MIME/media filters, favorites, real browser downloads,
+source management/discovery, all three remote search scopes, file uploads, monitoring rules and
+restart recovery, token entry on mobile, horizontal overflow, JavaScript errors, unexpected HTTP
+failures, and inert rendering of message markup. Fake Telegram responses do not validate real
+account permissions, flood limits, or Premium/free-search availability.

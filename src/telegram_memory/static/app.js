@@ -3,7 +3,8 @@ const $ = (id) => document.getElementById(id);
 let token = "",
   offset = 0,
   hasMore = false,
-  activeJobs = false;
+  activeJobs = false,
+  showingRemote = false;
 const pageSize = 50;
 function el(tag, text, className) {
   const node = document.createElement(tag);
@@ -185,12 +186,19 @@ function messageCard(item) {
   const actions = el("div", null, "actions"),
     favorite = el("button", item.favorite ? "★ Favorited" : "☆ Favorite");
   favorite.onclick = guard(async () => {
-    await post("/api/favorites", {
-      channel: item.channel_id,
-      message_id: item.message_id,
-      favorite: !item.favorite,
-    });
-    await search();
+    favorite.disabled = true;
+    try {
+      const result = await post("/api/favorites", {
+        channel: item.channel_id,
+        message_id: item.message_id,
+        favorite: !item.favorite,
+      });
+      item.favorite = result.favorite;
+      favorite.textContent = item.favorite ? "★ Favorited" : "☆ Favorite";
+      if (card.parentElement === $("results") && !showingRemote) await search();
+    } finally {
+      favorite.disabled = false;
+    }
   });
   actions.append(favorite);
   if (item.message_url && /^https:\/\/t\.me\//.test(item.message_url)) {
@@ -223,6 +231,7 @@ function messageCard(item) {
   return card;
 }
 async function search() {
+  showingRemote = false;
   const data = await json("/api/search?" + params());
   hasMore = data.has_more;
   $("results").replaceChildren(...data.results.map(messageCard));
@@ -330,7 +339,11 @@ async function jobs() {
             $("results").replaceChildren(
               ...job.result.results.map(messageCard),
             );
+            showingRemote = true;
             $("result-title").textContent = "Telegram results";
+            $("previous").disabled = true;
+            $("next").disabled = true;
+            $("page").textContent = "Telegram results";
             view("search");
           };
           card.append(show);
@@ -345,7 +358,8 @@ async function jobs() {
     );
   if (wasActive && !activeJobs) {
     await stats();
-    await search();
+    if (!showingRemote) await search();
+    await rules();
     notice(
       "Jobs finished. Check Transfers for results and any channel errors.",
     );
